@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: workbuddy
+          POSTGRES_PASSWORD: workbuddy
+          POSTGRES_DB: workbuddy
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U workbuddy -d workbuddy"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://workbuddy:workbuddy@127.0.0.1:5433/workbuddy?sslmode=disable
+      REDIS_URL: redis://127.0.0.1:6379/0
+      JWT_SECRET: ci-test-secret
+      JWT_ACCESS_TTL: 15m
+      JWT_REFRESH_TTL: 720h
+      ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Install goose migration tool dependencies
+        run: go mod download
+
+      - name: Run migrations
+        run: go run ./cmd/migrate up
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62.2
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
