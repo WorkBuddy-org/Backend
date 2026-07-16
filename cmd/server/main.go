@@ -10,7 +10,7 @@ import (
 
 	"github.com/workbuddy/backend/internal/auth"
 	"github.com/workbuddy/backend/internal/config"
-	"github.com/workbuddy/backend/internal/platform/httpx"
+	"github.com/workbuddy/backend/internal/httpapi"
 	"github.com/workbuddy/backend/internal/platform/postgres"
 	"github.com/workbuddy/backend/internal/platform/redis"
 	"github.com/workbuddy/backend/internal/server"
@@ -58,7 +58,7 @@ func main() {
 	})
 	authService := auth.NewService(authRepo, tokenManager, oauthRegistry, cfg.JWTRefreshTTL, cfg.FrontendCallbackURL)
 
-	router := httpx.NewRouter(httpx.RouterDeps{
+	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:          db,
 		Redis:       redisClient,
 		AuthHandler: auth.NewHandler(authService),

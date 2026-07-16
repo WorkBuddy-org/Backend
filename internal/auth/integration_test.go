@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/workbuddy/backend/internal/auth"
 	"github.com/workbuddy/backend/internal/config"
-	"github.com/workbuddy/backend/internal/platform/httpx"
+	"github.com/workbuddy/backend/internal/httpapi"
 	"github.com/workbuddy/backend/internal/platform/postgres"
 	redisplatform "github.com/workbuddy/backend/internal/platform/redis"
 	"github.com/workbuddy/backend/internal/user"
@@ -48,7 +48,7 @@ func TestRefreshAndLogoutFlow(t *testing.T) {
 	service := auth.NewService(repo, tokenManager, auth.NewOAuthRegistry(auth.OAuthConfig{}), cfg.JWTRefreshTTL, cfg.FrontendCallbackURL)
 	handler := auth.NewHandler(service)
 	middleware := auth.NewMiddleware(tokenManager)
-	router := httpx.NewRouter(httpx.RouterDeps{
+	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:          db,
 		Redis:       redisClient,
 		AuthHandler: handler,
