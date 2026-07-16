@@ -1,4 +1,4 @@
-package httpx
+package httpapi
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/workbuddy/backend/internal/auth"
+	"github.com/workbuddy/backend/internal/platform/httpx"
 )
 
 type HealthResponse struct {
@@ -18,10 +19,10 @@ type HealthResponse struct {
 }
 
 type RouterDeps struct {
-	DB           *pgxpool.Pool
-	Redis        *goredis.Client
-	AuthHandler  *auth.Handler
-	AuthMW       *auth.Middleware
+	DB          *pgxpool.Pool
+	Redis       *goredis.Client
+	AuthHandler *auth.Handler
+	AuthMW      *auth.Middleware
 }
 
 func NewRouter(deps RouterDeps) http.Handler {
@@ -61,7 +62,7 @@ func healthHandler(db *pgxpool.Pool, redisClient *goredis.Client) http.HandlerFu
 			slog.Warn("health check failed", "component", "redis", "error", err)
 		}
 
-		JSON(w, status, HealthResponse{
+		httpx.JSON(w, status, HealthResponse{
 			Status: overall,
 			Checks: checks,
 		})
