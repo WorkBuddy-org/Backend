@@ -240,6 +240,7 @@ func setOAuthStateCookie(w http.ResponseWriter, provider *OAuthProvider, state s
 		Path:     "/",
 		MaxAge:   600,
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
@@ -251,6 +252,7 @@ func clearOAuthStateCookie(w http.ResponseWriter, provider *OAuthProvider) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
 }
