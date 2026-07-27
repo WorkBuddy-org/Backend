@@ -43,3 +43,79 @@ no active timer.
 
 Reserved for tracking which connections are currently watching a room's timer
 (e.g. for websocket fan-out); not required for MVP polling-based clients.
+
+## Room Presence (Redis-only, no migration)
+
+Room timers run as one shared server-side cycle per room, not per user. When a
+task cycle ends for a participant, the server asks whether they need extra
+time; declining removes them from the session (they can rejoin later and
+start a new task). Answering that "who's here right now" question needs a
+fast, ephemeral set that the WebSocket layer can update on every
+connect/disconnect — that's what this key is for.
+
+### `room:{room_id}:presence` — set
+
+Holds the `user_id`s currently active in a room.
+
+- Added to on join (WebSocket connect / explicit join action).
+- Removed from on explicit leave, on task-cycle timeout with no extension
+  requested, or on WebSocket disconnect.
+- No TTL on the set itself; membership is maintained by explicit add/remove
+  calls from the connection lifecycle. A disconnect handler must always run
+  the removal, otherwise a crashed client leaks a stale presence entry.
+- Read by anything that needs "who's in this room right now" — live room UI,
+  matching a chat message to active participants, etc.
+
+### Presence vs. `room_participations` — Redis is *now*, Postgres is *history*
+
+This key is **not** a replacement for the `room_participations` table
+(migration `00009_create_room_participations.sql`). They answer different
+questions and neither is a cache of the other:
+
+| | `room:{room_id}:presence` (Redis) | `room_participations` (Postgres) |
+|---|---|---|
+| Answers | "Who is in the room right now?" | "Who was in the room, when, and for how long?" |
+| Lifetime | Ephemeral — reflects live connection state | Durable — one row per join, with `joined_at`/`left_at` |
+| Written on | Every join/leave/disconnect | Join (insert) and leave (update `left_at` + `left_reason`) |
+| Used for | Live presence indicators, real-time room state | Stats, presence history, distinguishing why someone left (`completed_no_extension` / `kicked` / `left_voluntarily`) |
+
+In practice: a join opens both a Redis set entry and a `room_participations`
+row; a leave closes both. If the two ever disagree (e.g. after a crash), the
+Redis set is allowed to be wrong until the next join/leave reconciles it —
+Postgres is the source of truth for history, Redis is the source of truth for
+"right now."
+
+## Security Scanning
+
+CI runs two security scanners alongside `go vet` and `golangci-lint`. Both
+currently run with `continue-on-error: true` — they report findings in the
+CI logs but don't fail the build. This is intentional for now: get visibility
+into what they flag before deciding what should hard-block merges.
+
+### govulncheck
+
+The official Go vulnerability scanner. It checks your dependencies and the
+standard library against the [Go vulnerability database](https://vuln.go.dev),
+and — unlike a plain dependency-version check — traces whether your code
+actually *calls* the vulnerable code path, so it doesn't flag CVEs in code
+you never reach.
+
+Run it locally:
+
+```
+go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+govulncheck ./...
+```
+
+### gosec
+
+Static analysis for common Go security mistakes: hardcoded credentials, SQL
+injection risk, weak/unsafe crypto, unsafe cookie flags, and similar patterns
+— things `go vet`/`golangci-lint` don't check for.
+
+Run it locally:
+
+```
+go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
+gosec ./...
+```
