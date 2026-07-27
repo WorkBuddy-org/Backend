@@ -1,6 +1,6 @@
 module github.com/workbuddy/backend
 
-go 1.25.0
+go 1.23.0
 
 require (
 	github.com/go-chi/chi/v5 v5.2.1
@@ -10,7 +10,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/pressly/goose/v3 v3.24.1
 	github.com/redis/go-redis/v9 v9.7.3
-	golang.org/x/oauth2 v0.36.0
+	golang.org/x/oauth2 v0.30.0
 )
 
 require (
