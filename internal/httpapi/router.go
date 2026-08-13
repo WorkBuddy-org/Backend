@@ -10,7 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/workbuddy/backend/internal/auth"
+	"github.com/workbuddy/backend/internal/invite"
 	"github.com/workbuddy/backend/internal/platform/httpx"
+	"github.com/workbuddy/backend/internal/room"
+	"github.com/workbuddy/backend/internal/task"
 )
 
 type HealthResponse struct {
@@ -19,10 +22,13 @@ type HealthResponse struct {
 }
 
 type RouterDeps struct {
-	DB          *pgxpool.Pool
-	Redis       *goredis.Client
-	AuthHandler *auth.Handler
-	AuthMW      *auth.Middleware
+	DB            *pgxpool.Pool
+	Redis         *goredis.Client
+	AuthHandler   *auth.Handler
+	AuthMW        *auth.Middleware
+	RoomHandler   *room.Handler
+	InviteHandler *invite.Handler
+	TaskHandler   *task.Handler
 }
 
 func NewRouter(deps RouterDeps) http.Handler {
@@ -34,6 +40,16 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 	r.Get("/health", healthHandler(deps.DB, deps.Redis))
 	deps.AuthHandler.RegisterRoutes(r, deps.AuthMW)
+
+	if deps.RoomHandler != nil {
+		deps.RoomHandler.RegisterRoutes(r, deps.AuthMW)
+	}
+	if deps.InviteHandler != nil {
+		deps.InviteHandler.RegisterRoutes(r, deps.AuthMW)
+	}
+	if deps.TaskHandler != nil {
+		deps.TaskHandler.RegisterRoutes(r, deps.AuthMW)
+	}
 
 	return r
 }

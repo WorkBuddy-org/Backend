@@ -46,6 +46,16 @@ func UserIDFromContext(ctx context.Context) (string, bool) {
 	return userID, ok
 }
 
+// CurrentUserID extracts and parses the authenticated user's ID from the
+// request context. It requires RequireAuth to have run first.
+func CurrentUserID(r *http.Request) (uuid.UUID, error) {
+	raw, ok := UserIDFromContext(r.Context())
+	if !ok {
+		return uuid.Nil, fmt.Errorf("missing user context")
+	}
+	return uuid.Parse(raw)
+}
+
 func bearerToken(header string) (string, error) {
 	if header == "" {
 		return "", fmt.Errorf("missing authorization header")

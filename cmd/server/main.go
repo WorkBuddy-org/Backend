@@ -11,9 +11,12 @@ import (
 	"github.com/workbuddy/backend/internal/auth"
 	"github.com/workbuddy/backend/internal/config"
 	"github.com/workbuddy/backend/internal/httpapi"
+	"github.com/workbuddy/backend/internal/invite"
 	"github.com/workbuddy/backend/internal/platform/postgres"
 	"github.com/workbuddy/backend/internal/platform/redis"
+	"github.com/workbuddy/backend/internal/room"
 	"github.com/workbuddy/backend/internal/server"
+	"github.com/workbuddy/backend/internal/task"
 )
 
 func main() {
@@ -58,11 +61,18 @@ func main() {
 	})
 	authService := auth.NewService(authRepo, tokenManager, oauthRegistry, cfg.JWTRefreshTTL, cfg.FrontendCallbackURL)
 
+	roomService := room.NewService(room.NewRepository(db))
+	inviteService := invite.NewService(invite.NewRepository(db))
+	taskService := task.NewService(task.NewRepository(db), roomService)
+
 	router := httpapi.NewRouter(httpapi.RouterDeps{
-		DB:          db,
-		Redis:       redisClient,
-		AuthHandler: auth.NewHandler(authService),
-		AuthMW:      auth.NewMiddleware(tokenManager),
+		DB:            db,
+		Redis:         redisClient,
+		AuthHandler:   auth.NewHandler(authService),
+		AuthMW:        auth.NewMiddleware(tokenManager),
+		RoomHandler:   room.NewHandler(roomService),
+		InviteHandler: invite.NewHandler(inviteService),
+		TaskHandler:   task.NewHandler(taskService),
 	})
 	addr := ":" + cfg.Port
 	srv := server.New(addr, router)

@@ -2,6 +2,8 @@ module github.com/workbuddy/backend
 
 go 1.25.0
 
+toolchain go1.25.12
+
 require (
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
