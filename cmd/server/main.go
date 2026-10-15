@@ -14,6 +14,7 @@ import (
 	"github.com/workbuddy/backend/internal/invite"
 	"github.com/workbuddy/backend/internal/platform/postgres"
 	"github.com/workbuddy/backend/internal/platform/redis"
+	"github.com/workbuddy/backend/internal/profile"
 	"github.com/workbuddy/backend/internal/room"
 	"github.com/workbuddy/backend/internal/server"
 	"github.com/workbuddy/backend/internal/task"
@@ -64,15 +65,17 @@ func main() {
 	roomService := room.NewService(room.NewRepository(db))
 	inviteService := invite.NewService(invite.NewRepository(db))
 	taskService := task.NewService(task.NewRepository(db), roomService)
+	profileService := profile.NewService(profile.NewRepository(db))
 
 	router := httpapi.NewRouter(httpapi.RouterDeps{
-		DB:            db,
-		Redis:         redisClient,
-		AuthHandler:   auth.NewHandler(authService),
-		AuthMW:        auth.NewMiddleware(tokenManager),
-		RoomHandler:   room.NewHandler(roomService),
-		InviteHandler: invite.NewHandler(inviteService),
-		TaskHandler:   task.NewHandler(taskService),
+		DB:             db,
+		Redis:          redisClient,
+		AuthHandler:    auth.NewHandler(authService),
+		AuthMW:         auth.NewMiddleware(tokenManager),
+		RoomHandler:    room.NewHandler(roomService),
+		InviteHandler:  invite.NewHandler(inviteService),
+		TaskHandler:    task.NewHandler(taskService),
+		ProfileHandler: profile.NewHandler(profileService),
 	})
 	addr := ":" + cfg.Port
 	srv := server.New(addr, router)
