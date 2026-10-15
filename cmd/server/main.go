@@ -59,7 +59,7 @@ func main() {
 		GitHubClientSecret: cfg.GitHubClientSecret,
 		GitHubRedirectURL:  cfg.GitHubRedirectURL,
 	})
-	authService := auth.NewService(authRepo, tokenManager, oauthRegistry, cfg.JWTRefreshTTL, cfg.FrontendCallbackURL)
+	authService := auth.NewService(authRepo, tokenManager, oauthRegistry, cfg.JWTRefreshTTL, cfg.FrontendCallbackURL, redisClient)
 
 	roomService := room.NewService(room.NewRepository(db))
 	inviteService := invite.NewService(invite.NewRepository(db))
