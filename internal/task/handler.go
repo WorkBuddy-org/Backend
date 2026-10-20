@@ -120,7 +120,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, err := h.service.Update(r.Context(), taskID, userID, Update{Text: req.Text, Completed: req.Completed})
+	t, err := h.service.Update(r.Context(), taskID, userID, Update(req))
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch {
@@ -159,7 +159,7 @@ func (h *Handler) listMine(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeJSON(r *http.Request, dst any) error {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
