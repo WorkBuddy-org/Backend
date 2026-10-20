@@ -29,6 +29,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *Middleware) {
 	r.Get("/auth/google/callback", h.googleCallback)
 	r.Get("/auth/github", h.githubLogin)
 	r.Get("/auth/github/callback", h.githubCallback)
+	r.Post("/auth/register", h.register)
+	r.Post("/auth/login", h.login)
 	r.Post("/auth/refresh", h.refresh)
 	r.Post("/auth/logout", h.logout)
 
@@ -36,6 +38,17 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *Middleware) {
 		r.Use(authMiddleware.RequireAuth)
 		r.Get("/auth/me", h.me)
 	})
+}
+
+type registerRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Name     string `json:"name"`
+}
+
+type loginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type refreshRequest struct {
@@ -160,6 +173,64 @@ func (h *Handler) completeOAuth(w http.ResponseWriter, r *http.Request, provider
 	}
 
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
+	var req registerRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	u, err := h.service.RegisterUser(r.Context(), req.Email, req.Password, req.Name)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, ErrInvalidEmail), errors.Is(err, ErrWeakPassword):
+			status = http.StatusBadRequest
+		case errors.Is(err, ErrDuplicateEmail):
+			status = http.StatusConflict
+		}
+		httpx.Error(w, status, err.Error())
+		return
+	}
+
+	pair, err := h.service.IssueTokenPair(r.Context(), u)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "failed to issue tokens")
+		return
+	}
+
+	httpx.JSON(w, http.StatusCreated, pair)
+}
+
+func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
+	var req loginRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	u, err := h.service.AuthenticatePassword(r.Context(), req.Email, req.Password)
+	if err != nil {
+		status := http.StatusInternalServerError
+		switch {
+		case errors.Is(err, ErrInvalidCredentials):
+			status = http.StatusUnauthorized
+		case errors.Is(err, ErrRateLimited):
+			status = http.StatusTooManyRequests
+		}
+		httpx.Error(w, status, err.Error())
+		return
+	}
+
+	pair, err := h.service.IssueTokenPair(r.Context(), u)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "failed to issue tokens")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, pair)
 }
 
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {

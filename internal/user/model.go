@@ -11,6 +11,7 @@ type OAuthProvider string
 const (
 	OAuthProviderGoogle OAuthProvider = "google"
 	OAuthProviderGitHub OAuthProvider = "github"
+	OAuthProviderEmail  OAuthProvider = "email"
 )
 
 type User struct {
@@ -24,4 +25,5 @@ type User struct {
 	Timezone      *string
 	AvatarStatus  string
 	CreatedAt     time.Time
+	PasswordHash  *string
 }
