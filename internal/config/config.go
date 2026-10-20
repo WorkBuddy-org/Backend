@@ -85,10 +85,10 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("FRONTEND_CALLBACK_URL is required in production")
 		}
 		if cfg.GoogleClientID == "" || cfg.GoogleClientSecret == "" || cfg.GoogleRedirectURL == "" {
-			return nil, fmt.Errorf("Google OAuth configuration is required in production: set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URL")
+			return nil, fmt.Errorf("production requires Google OAuth configuration: set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URL")
 		}
 		if cfg.GitHubClientID == "" || cfg.GitHubClientSecret == "" || cfg.GitHubRedirectURL == "" {
-			return nil, fmt.Errorf("GitHub OAuth configuration is required in production: set GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, and GITHUB_REDIRECT_URL")
+			return nil, fmt.Errorf("production requires GitHub OAuth configuration: set GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET, and GITHUB_REDIRECT_URL")
 		}
 	}
 

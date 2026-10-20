@@ -12,6 +12,7 @@ import (
 	"github.com/workbuddy/backend/internal/auth"
 	"github.com/workbuddy/backend/internal/invite"
 	"github.com/workbuddy/backend/internal/platform/httpx"
+	"github.com/workbuddy/backend/internal/profile"
 	"github.com/workbuddy/backend/internal/room"
 	"github.com/workbuddy/backend/internal/task"
 )
@@ -22,20 +23,20 @@ type HealthResponse struct {
 }
 
 type RouterDeps struct {
-	DB            *pgxpool.Pool
-	Redis         *goredis.Client
-	AuthHandler   *auth.Handler
-	AuthMW        *auth.Middleware
-	RoomHandler   *room.Handler
-	InviteHandler *invite.Handler
-	TaskHandler   *task.Handler
+	DB             *pgxpool.Pool
+	Redis          *goredis.Client
+	AuthHandler    *auth.Handler
+	AuthMW         *auth.Middleware
+	RoomHandler    *room.Handler
+	InviteHandler  *invite.Handler
+	TaskHandler    *task.Handler
+	ProfileHandler *profile.Handler
 }
 
 func NewRouter(deps RouterDeps) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 
 	r.Get("/health", healthHandler(deps.DB, deps.Redis))
@@ -49,6 +50,9 @@ func NewRouter(deps RouterDeps) http.Handler {
 	}
 	if deps.TaskHandler != nil {
 		deps.TaskHandler.RegisterRoutes(r, deps.AuthMW)
+	}
+	if deps.ProfileHandler != nil {
+		deps.ProfileHandler.RegisterRoutes(r, deps.AuthMW)
 	}
 
 	return r
