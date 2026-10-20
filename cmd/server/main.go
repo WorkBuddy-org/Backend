@@ -18,6 +18,7 @@ import (
 	"github.com/workbuddy/backend/internal/room"
 	"github.com/workbuddy/backend/internal/server"
 	"github.com/workbuddy/backend/internal/task"
+	"github.com/workbuddy/backend/internal/ws"
 )
 
 func main() {
@@ -67,6 +68,31 @@ func main() {
 	taskService := task.NewService(task.NewRepository(db), roomService)
 	profileService := profile.NewService(profile.NewRepository(db))
 
+	// Presence lives in Redis but the hub is in memory, so with a single
+	// instance any presence left over from a previous run is stale.
+	wsPresence := ws.NewPresenceStore(redisClient, authRepo)
+	if n, err := wsPresence.ResetAll(ctx); err != nil {
+		slog.Error("failed to reset websocket presence", "error", err)
+		os.Exit(1)
+	} else if n > 0 {
+		slog.Info("cleared stale websocket presence", "rooms", n)
+	}
+	wsHub := ws.NewHub()
+	wsAllowAnyOrigin := len(cfg.WSAllowedOrigins) == 0 && cfg.Env == "development"
+	if len(cfg.WSAllowedOrigins) == 0 && !wsAllowAnyOrigin {
+		slog.Warn("WS_ALLOWED_ORIGINS is empty: browser WebSocket connections will be rejected")
+	}
+	wsHandler := ws.NewHandler(ws.HandlerDeps{
+		Hub:      wsHub,
+		Presence: wsPresence,
+		Tokens:   tokenManager,
+		Rooms:    roomService,
+		Config: ws.Config{
+			AllowedOrigins: cfg.WSAllowedOrigins,
+			AllowAnyOrigin: wsAllowAnyOrigin,
+		},
+	})
+
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:             db,
 		Redis:          redisClient,
@@ -76,6 +102,7 @@ func main() {
 		InviteHandler:  invite.NewHandler(inviteService),
 		TaskHandler:    task.NewHandler(taskService),
 		ProfileHandler: profile.NewHandler(profileService),
+		WSHandler:      wsHandler,
 	})
 	addr := ":" + cfg.Port
 	srv := server.New(addr, router)
@@ -96,6 +123,10 @@ func main() {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// Shutdown does not close hijacked connections, so close sockets first;
+	// their disconnect handling clears presence while Redis is still open.
+	wsHub.CloseAll()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("graceful shutdown failed", "error", err)

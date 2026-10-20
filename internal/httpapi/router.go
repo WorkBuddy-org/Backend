@@ -15,6 +15,7 @@ import (
 	"github.com/workbuddy/backend/internal/profile"
 	"github.com/workbuddy/backend/internal/room"
 	"github.com/workbuddy/backend/internal/task"
+	"github.com/workbuddy/backend/internal/ws"
 )
 
 type HealthResponse struct {
@@ -31,6 +32,7 @@ type RouterDeps struct {
 	InviteHandler  *invite.Handler
 	TaskHandler    *task.Handler
 	ProfileHandler *profile.Handler
+	WSHandler      *ws.Handler
 }
 
 func NewRouter(deps RouterDeps) http.Handler {
@@ -53,6 +55,9 @@ func NewRouter(deps RouterDeps) http.Handler {
 	}
 	if deps.ProfileHandler != nil {
 		deps.ProfileHandler.RegisterRoutes(r, deps.AuthMW)
+	}
+	if deps.WSHandler != nil {
+		deps.WSHandler.RegisterRoutes(r)
 	}
 
 	return r

@@ -68,6 +68,16 @@ func (s *Service) Join(ctx context.Context, roomID, userID uuid.UUID) (*JoinResu
 	return &JoinResult{Room: rm, ActiveSession: session, Participation: participation}, nil
 }
 
+// HasOpenParticipation reports whether the user is currently in the room.
+// A room that does not exist simply has no participations.
+func (s *Service) HasOpenParticipation(ctx context.Context, roomID, userID uuid.UUID) (bool, error) {
+	existing, err := s.repo.FindOpenParticipation(ctx, userID, roomID)
+	if err != nil {
+		return false, err
+	}
+	return existing != nil, nil
+}
+
 func (s *Service) Leave(ctx context.Context, roomID, userID uuid.UUID) error {
 	existing, err := s.repo.FindOpenParticipation(ctx, userID, roomID)
 	if err != nil {

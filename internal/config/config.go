@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -30,6 +31,10 @@ type Config struct {
 	GitHubRedirectURL  string
 
 	FrontendCallbackURL string
+
+	// WSAllowedOrigins lists browser origins (scheme://host[:port]) allowed to
+	// open WebSockets. Empty means any origin, but only when Env is development.
+	WSAllowedOrigins []string
 }
 
 func Load() (*Config, error) {
@@ -57,6 +62,8 @@ func Load() (*Config, error) {
 		GitHubRedirectURL:  getEnv("GITHUB_REDIRECT_URL", ""),
 
 		FrontendCallbackURL: getEnv("FRONTEND_CALLBACK_URL", ""),
+
+		WSAllowedOrigins: splitList(getEnv("WS_ALLOWED_ORIGINS", "")),
 	}
 
 	var err error
@@ -93,6 +100,17 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// splitList parses a comma-separated value, dropping blank entries.
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func getEnv(key, fallback string) string {

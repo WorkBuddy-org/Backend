@@ -55,14 +55,18 @@ connect/disconnect — that's what this key is for.
 
 ### `room:{room_id}:presence` — set
 
-Holds the `user_id`s currently active in a room.
+Holds the `user_id`s with at least one open WebSocket to the room
+(`GET /rooms/{id}/ws`, see [docs/ws-protocol.md](docs/ws-protocol.md)).
 
-- Added to on join (WebSocket connect / explicit join action).
-- Removed from on explicit leave, on task-cycle timeout with no extension
-  requested, or on WebSocket disconnect.
-- No TTL on the set itself; membership is maintained by explicit add/remove
-  calls from the connection lifecycle. A disconnect handler must always run
-  the removal, otherwise a crashed client leaks a stale presence entry.
+- Added on a user's first WebSocket connect to the room (REST join is a
+  prerequisite for connecting, but does not touch this set by itself).
+- Removed when the user's last connection to the room closes — including
+  abnormal disconnects detected by the 25 s server ping. Later phases also
+  remove users on kick / task-cycle timeout with no extension.
+- No TTL on the set itself; membership is maintained by the connection
+  lifecycle. The connection hub is in memory (single instance for the MVP),
+  so the server deletes all `room:*:presence` sets on startup to drop
+  entries left behind by a crash.
 - Read by anything that needs "who's in this room right now" — live room UI,
   matching a chat message to active participants, etc.
 

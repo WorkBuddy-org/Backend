@@ -61,6 +61,36 @@ func (r *Repository) FindUserByID(ctx context.Context, id uuid.UUID) (*user.User
 	return scanUser(row)
 }
 
+// FindUserNamesByIDs returns display names keyed by user id. Unknown ids are
+// absent from the map.
+func (r *Repository) FindUserNamesByIDs(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	names := make(map[uuid.UUID]string, len(ids))
+	if len(ids) == 0 {
+		return names, nil
+	}
+
+	const query = `SELECT id, name FROM users WHERE id = ANY($1)`
+	rows, err := r.db.Query(ctx, query, ids)
+	if err != nil {
+		return nil, fmt.Errorf("find user names: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id uuid.UUID
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("scan user name: %w", err)
+		}
+		names[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate user names: %w", err)
+	}
+
+	return names, nil
+}
+
 func (r *Repository) CreateUser(ctx context.Context, profile *OAuthProfile) (*user.User, error) {
 	const query = `
 		INSERT INTO users (email, name, oauth_provider, oauth_id)
