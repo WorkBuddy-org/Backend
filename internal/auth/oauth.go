@@ -151,7 +151,7 @@ func fetchGoogleProfile(ctx context.Context, token *oauth2.Token, cfg *oauth2.Co
 	if err != nil {
 		return nil, fmt.Errorf("fetch google profile: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
@@ -185,7 +185,7 @@ func fetchGitHubProfile(ctx context.Context, token *oauth2.Token, cfg *oauth2.Co
 	if err != nil {
 		return nil, fmt.Errorf("fetch github user: %w", err)
 	}
-	defer userResp.Body.Close()
+	defer func() { _ = userResp.Body.Close() }()
 
 	if userResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(userResp.Body, 1024))
@@ -228,7 +228,7 @@ func fetchGitHubPrimaryEmail(client *http.Client) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch github emails: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
