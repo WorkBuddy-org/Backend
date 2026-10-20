@@ -94,12 +94,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := h.service.Update(r.Context(), userID, Update{
-		Name:     req.Name,
-		Role:     req.Role,
-		Stack:    req.Stack,
-		Timezone: req.Timezone,
-	})
+	u, err := h.service.Update(r.Context(), userID, Update(req))
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch {
@@ -116,7 +111,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeJSON(r *http.Request, dst any) error {
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
