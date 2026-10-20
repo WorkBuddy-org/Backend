@@ -48,7 +48,7 @@ func TestCreateAndCompleteTask(t *testing.T) {
 
 	tokenManager := auth.NewTokenManager(cfg.JWTSecret, cfg.JWTAccessTTL)
 	authRepo := auth.NewRepository(db)
-	authService := auth.NewService(authRepo, tokenManager, auth.NewOAuthRegistry(auth.OAuthConfig{}), cfg.JWTRefreshTTL, cfg.FrontendCallbackURL)
+	authService := auth.NewService(authRepo, tokenManager, auth.NewOAuthRegistry(auth.OAuthConfig{}), cfg.JWTRefreshTTL, cfg.FrontendCallbackURL, redisClient)
 
 	roomService := room.NewService(room.NewRepository(db))
 	taskService := task.NewService(task.NewRepository(db), roomService)
