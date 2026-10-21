@@ -6,12 +6,32 @@ import (
 	"github.com/google/uuid"
 )
 
+// Values of room_participations.left_reason.
+const (
+	LeftReasonVoluntary = "left_voluntarily"
+	LeftReasonKicked    = "kicked"
+)
+
+// LeaveListener is told after a user's participation in a room is closed, so
+// real-time connections to that room can be dropped.
+type LeaveListener interface {
+	UserLeft(roomID, userID uuid.UUID, reason string)
+}
+
 type Service struct {
-	repo *Repository
+	repo     *Repository
+	listener LeaveListener
 }
 
 func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
+}
+
+// SetLeaveListener registers l to be notified of every closed participation.
+// It is a setter rather than a constructor argument because the listener (the
+// WebSocket handler) itself depends on this service.
+func (s *Service) SetLeaveListener(l LeaveListener) {
+	s.listener = l
 }
 
 type JoinResult struct {
@@ -68,6 +88,16 @@ func (s *Service) Join(ctx context.Context, roomID, userID uuid.UUID) (*JoinResu
 	return &JoinResult{Room: rm, ActiveSession: session, Participation: participation}, nil
 }
 
+// HasOpenParticipation reports whether the user is currently in the room.
+// A room that does not exist simply has no participations.
+func (s *Service) HasOpenParticipation(ctx context.Context, roomID, userID uuid.UUID) (bool, error) {
+	existing, err := s.repo.FindOpenParticipation(ctx, userID, roomID)
+	if err != nil {
+		return false, err
+	}
+	return existing != nil, nil
+}
+
 func (s *Service) Leave(ctx context.Context, roomID, userID uuid.UUID) error {
 	existing, err := s.repo.FindOpenParticipation(ctx, userID, roomID)
 	if err != nil {
@@ -77,5 +107,15 @@ func (s *Service) Leave(ctx context.Context, roomID, userID uuid.UUID) error {
 		return ErrNotInRoom
 	}
 
-	return s.repo.CloseParticipation(ctx, existing.ID, "left_voluntarily")
+	if err := s.repo.CloseParticipation(ctx, existing.ID, LeftReasonVoluntary); err != nil {
+		return err
+	}
+	s.notifyLeft(roomID, userID, LeftReasonVoluntary)
+	return nil
+}
+
+func (s *Service) notifyLeft(roomID, userID uuid.UUID, reason string) {
+	if s.listener != nil {
+		s.listener.UserLeft(roomID, userID, reason)
+	}
 }
