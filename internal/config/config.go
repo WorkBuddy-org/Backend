@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,12 @@ type Config struct {
 	// WSAllowedOrigins lists browser origins (scheme://host[:port]) allowed to
 	// open WebSockets. Empty means any origin, but only when Env is development.
 	WSAllowedOrigins []string
+
+	// ExtensionPromptTimeout is how long a user has to answer the task
+	// extension prompt before being removed from the room.
+	ExtensionPromptTimeout time.Duration
+	// ExtensionMaxCount caps extensions per task.
+	ExtensionMaxCount int
 }
 
 func Load() (*Config, error) {
@@ -75,6 +82,16 @@ func Load() (*Config, error) {
 	cfg.JWTRefreshTTL, err = time.ParseDuration(getEnv("JWT_REFRESH_TTL", "720h"))
 	if err != nil {
 		return nil, fmt.Errorf("parse JWT_REFRESH_TTL: %w", err)
+	}
+
+	cfg.ExtensionPromptTimeout, err = time.ParseDuration(getEnv("EXTENSION_PROMPT_TIMEOUT", "60s"))
+	if err != nil || cfg.ExtensionPromptTimeout <= 0 {
+		return nil, fmt.Errorf("parse EXTENSION_PROMPT_TIMEOUT: must be a positive duration such as 60s")
+	}
+
+	cfg.ExtensionMaxCount, err = strconv.Atoi(getEnv("EXTENSION_MAX_COUNT", "3"))
+	if err != nil || cfg.ExtensionMaxCount < 0 {
+		return nil, fmt.Errorf("parse EXTENSION_MAX_COUNT: must be a non-negative integer")
 	}
 
 	if cfg.DatabaseURL == "" {

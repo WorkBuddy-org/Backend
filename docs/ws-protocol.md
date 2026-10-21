@@ -127,8 +127,8 @@ presence within ~35 s.
 
 On `close` with any code other than `1000` and `4001`, reconnect with
 exponential backoff (e.g. 1 s, 2 s, 4 s … capped at 30 s, with jitter) and a
-fresh access token. Do not reconnect after `4001` (removed from room, planned)
-unless the user joins again via REST.
+fresh access token. Do not reconnect after `4001` (removed from room) unless
+the user joins again via REST.
 
 ---
 
@@ -181,10 +181,10 @@ unless the user joins again via REST.
 |---|---|---|
 | `disconnect` | live | The user's last socket to the room closed (any cause). |
 | `left_voluntarily` | live | Left via `POST /rooms/{id}/leave`. |
-| `completed_no_extension` | planned | Task cycle ended and the user declined/ignored the extension prompt. |
-| `kicked` | planned | Removed by the server/moderation. |
+| `completed_no_extension` | planned | Reserved; not emitted today (declining an extension uses `kicked`). |
+| `kicked` | live | Removed by the server: declined or ignored the task extension prompt. |
 
-(Planned values match `room_participations.left_reason`.)
+(Values other than `disconnect` match `room_participations.left_reason`.)
 
 ### `pong` — live, to the socket that sent `ping`
 
@@ -251,11 +251,20 @@ one running/prompting timer at a time.
 - Expiry is detected by a 1 s server poll, so the event may arrive up to ~1 s
   after `ends_at`.
 
-### `task_extension_prompt` — planned, **targeted** (only the task owner's sockets in this room)
+### `task_extension_prompt` — live, **targeted** (only the task owner's sockets in this room)
 
-Sent when the owner's task cycle ends and they must decide whether they need
-more time. The answer is sent via REST (endpoint defined with the
-task-extension feature); not answering by `respond_by` counts as declining.
+Sent when the owner's task timer expires (right after the room's
+`timer_ended` with `reason: "expired"`). The owner must answer via REST
+before `deadline`:
+
+- `POST /tasks/{task_id}/extend` with `{"minutes": 15 | 30}` — the timer runs
+  again for that many minutes from now (`task_extended` is broadcast).
+- `POST /tasks/{task_id}/no-extend` (no body) — the timer ends and the user
+  is removed from the room (see `kicked`).
+- No answer by `deadline` (default 60 s, `EXTENSION_PROMPT_TIMEOUT`) is the
+  same as `no-extend`.
+- Completing the task (`PATCH /tasks/{id}` with `{"completed": true}`) during
+  the prompt also ends the timer, without removing the user.
 
 ```json
 {
@@ -264,15 +273,26 @@ task-extension feature); not answering by `respond_by` counts as declining.
   "ts": "2026-10-20T13:25:00.020Z",
   "data": {
     "task_id": "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
-    "text": "Write the onboarding email",
-    "extended_count": 0,
-    "extra_minutes_used": 0,
-    "respond_by": "2026-10-20T13:26:00.000Z"
+    "deadline": "2026-10-20T13:26:00.010Z",
+    "allowed_minutes": [15, 30],
+    "extensions_left": 3,
+    "server_time": "2026-10-20T13:25:00.020Z"
   }
 }
 ```
 
-### `task_extended` — planned, broadcast
+- `extensions_left`: how many more times this task may be extended (at most
+  `EXTENSION_MAX_COUNT`, default 3, per task). When it is `0`,
+  `allowed_minutes` is `[]`; the only options are `no-extend`, completing the
+  task, or letting the deadline pass.
+- If the owner has no socket open in the room the prompt is not delivered;
+  the deadline still applies. The current state is on the task in REST:
+  `timer_status: "prompting"` and `prompt_deadline_at`.
+- REST answers: `200` with the task; `409` if the timer is not prompting,
+  the deadline has passed / the prompt was already answered, or the limit is
+  reached; `400` for other `minutes`; `403` for someone else's task.
+
+### `task_extended` — live, broadcast
 
 ```json
 {
@@ -282,32 +302,36 @@ task-extension feature); not answering by `respond_by` counts as declining.
   "data": {
     "task_id": "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
     "user_id": "8d3c0f7a-1b2e-4c5d-9e8f-0a1b2c3d4e5f",
-    "added_minutes": 10,
+    "added_minutes": 15,
     "extended_count": 1,
-    "extra_minutes_used": 10
+    "extra_minutes_used": 15,
+    "ends_at": "2026-10-20T13:40:20.300Z",
+    "server_time": "2026-10-20T13:25:20.311Z"
   }
 }
 ```
 
 - `extended_count` / `extra_minutes_used` are the task's totals after this
   extension (columns of the same name on `tasks`).
+- `ends_at` is the new end of the running timer; restart the local countdown
+  from it, exactly as for `timer_started`.
 
-### `kicked` — planned, **targeted** (only that user's sockets in this room)
+### `kicked` — live, **targeted** (only that user's sockets in this room)
 
-The user was removed from the room. Right after this event the server closes
-those sockets with code `4001`, and the rest of the room receives `user_left`
-with the matching `reason`.
+The user was removed from the room (they declined or did not answer the
+extension prompt). Right after this event the server closes those sockets
+with code `4001`, the user's participation is closed with
+`left_reason: "kicked"`, and the rest of the room receives `user_left` with
+`reason: "kicked"`.
 
 ```json
 {
   "type": "kicked",
   "room_id": "3f2b8c1e-6a4d-4d5e-9b1a-2c7e8f9a0b1c",
   "ts": "2026-10-20T13:26:00.050Z",
-  "data": { "reason": "completed_no_extension" }
+  "data": { "reason": "kicked" }
 }
 ```
-
-- `reason`: `completed_no_extension` | `kicked`.
 
 ### `chat_message` — planned, broadcast (including the sender's sockets)
 
@@ -341,7 +365,7 @@ from this event (or de-duplicate by `message_id`).
 | `1008` | server | Client too slow — its outgoing buffer (64 messages) overflowed. If the socket is fully stuck the browser may see `1006` instead. | Reconnect; the new snapshot resyncs state. |
 | `1009` | server | Client message larger than 4096 bytes. | Fix the client. |
 | `1011` | server | Internal error (presence store unavailable). | Reconnect with backoff. |
-| `4001` | server | Removed from room — planned, follows `kicked`. | Do not reconnect unless the user joins again. |
+| `4001` | server | Removed from room; follows `kicked`. Also used if a handshake races with leaving the room. | Do not reconnect unless the user joins again. |
 
 ---
 

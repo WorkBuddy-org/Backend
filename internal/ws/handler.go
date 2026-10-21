@@ -233,23 +233,39 @@ func (h *Handler) leave(c *client) {
 	}))
 }
 
-// UserLeft implements room.LeaveListener: after a user leaves the room via
-// REST, their sockets to it are closed (1000), presence is cleared and the
-// room gets a single user_left with the given reason.
+// UserLeft implements room.LeaveListener: after a user's participation in
+// the room is closed, their sockets to it are closed, presence is cleared and
+// the room gets a single user_left with the given reason. A voluntary leave
+// closes with 1000; a kick first sends kicked to those sockets and closes
+// with 4001.
 func (h *Handler) UserLeft(roomID, userID uuid.UUID, reason string) {
-	h.removeFromRoom(roomID, userID, reason, websocket.StatusNormalClosure, "left room")
+	if reason == LeftReasonKicked {
+		kicked := NewEvent(TypeKicked, roomID, KickedData{Reason: reason})
+		h.removeFromRoom(roomID, userID, reason, StatusRemovedFromRoom, "removed from room", &kicked)
+		return
+	}
+	h.removeFromRoom(roomID, userID, reason, websocket.StatusNormalClosure, "left room", nil)
 }
 
-// removeFromRoom drops every connection the user has to the room. The
-// connections' own leave() becomes a no-op because the hub no longer knows
-// them, so user_left is broadcast exactly once, here.
-func (h *Handler) removeFromRoom(roomID, userID uuid.UUID, reason string, code websocket.StatusCode, closeReason string) {
+// removeFromRoom drops every connection the user has to the room, sending
+// last (if not nil) to each of them before the close frame. The connections'
+// own leave() becomes a no-op because the hub no longer knows them, so
+// user_left is broadcast exactly once, here.
+func (h *Handler) removeFromRoom(roomID, userID uuid.UUID, reason string, code websocket.StatusCode, closeReason string, last *Event) {
 	h.lifecycle.Lock()
 	defer h.lifecycle.Unlock()
 
+	var lastMsg []byte
+	if last != nil {
+		lastMsg, _ = marshalEvent(*last)
+	}
+
 	removed := h.hub.removeUserFromRoom(userID, roomID)
 	for _, c := range removed {
-		c.close(code, closeReason)
+		if lastMsg != nil {
+			c.enqueue(lastMsg)
+		}
+		c.closeAfterFlush(code, closeReason)
 	}
 	if len(removed) == 0 {
 		return

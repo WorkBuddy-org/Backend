@@ -28,6 +28,10 @@ const (
 // connection to the room closed, cleanly or not.
 const LeftReasonDisconnect = "disconnect"
 
+// LeftReasonKicked is the user_left reason (and room_participations
+// left_reason) when the server removed the user from the room.
+const LeftReasonKicked = "kicked"
+
 // StatusRemovedFromRoom closes sockets of a user the server removed from the
 // room (kicked); clients must not reconnect without joining again.
 const StatusRemovedFromRoom websocket.StatusCode = 4001
@@ -104,6 +108,30 @@ type TimerEndedData struct {
 	UserID     uuid.UUID `json:"user_id"`
 	Reason     string    `json:"reason"`
 	ServerTime string    `json:"server_time"`
+}
+
+// TaskExtensionPromptData is sent only to the task owner when their timer
+// ends. Not answering by deadline counts as declining.
+type TaskExtensionPromptData struct {
+	TaskID         uuid.UUID `json:"task_id"`
+	Deadline       string    `json:"deadline"`
+	AllowedMinutes []int     `json:"allowed_minutes"`
+	ExtensionsLeft int       `json:"extensions_left"`
+	ServerTime     string    `json:"server_time"`
+}
+
+type TaskExtendedData struct {
+	TaskID           uuid.UUID `json:"task_id"`
+	UserID           uuid.UUID `json:"user_id"`
+	AddedMinutes     int       `json:"added_minutes"`
+	ExtendedCount    int       `json:"extended_count"`
+	ExtraMinutesUsed int       `json:"extra_minutes_used"`
+	EndsAt           string    `json:"ends_at"`
+	ServerTime       string    `json:"server_time"`
+}
+
+type KickedData struct {
+	Reason string `json:"reason"`
 }
 
 // clientMessage is the only shape the server reads from clients; anything

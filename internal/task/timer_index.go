@@ -13,7 +13,8 @@ import (
 // Redis keys of the scheduling index. Postgres stays the source of truth;
 // these sorted sets only say when to look at a task again.
 const (
-	timersDueKey = "timers:due"
+	timersDueKey  = "timers:due"
+	promptsDueKey = "prompts:due"
 )
 
 // claimScript removes a member only if its score is still due. A timer that
@@ -76,6 +77,17 @@ func (s dueSet) due(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
 	return ids, nil
 }
 
+// take removes the entry whatever its score and reports whether this caller
+// removed it. Used by user answers, which race the deadline's claim for the
+// same entry.
+func (s dueSet) take(ctx context.Context, taskID uuid.UUID) (bool, error) {
+	n, err := s.redis.ZRem(ctx, s.key, taskID.String()).Result()
+	if err != nil {
+		return false, fmt.Errorf("take %s: %w", s.key, err)
+	}
+	return n == 1, nil
+}
+
 // claim reports whether this caller removed the due entry and so owns acting
 // on it.
 func (s dueSet) claim(ctx context.Context, taskID uuid.UUID, now time.Time) (bool, error) {
@@ -86,10 +98,12 @@ func (s dueSet) claim(ctx context.Context, taskID uuid.UUID, now time.Time) (boo
 	return n == 1, nil
 }
 
-// TimerIndex holds the sorted sets the scheduler polls.
+// TimerIndex holds the sorted sets the scheduler polls: running timers by
+// ends_at and extension prompts by their deadline.
 type TimerIndex struct {
-	redis  *goredis.Client
-	timers dueSet
+	redis   *goredis.Client
+	timers  dueSet
+	prompts dueSet
 }
 
 // NewTimerIndex puts keyPrefix in front of every key; production passes ""
@@ -97,18 +111,22 @@ type TimerIndex struct {
 // isolated from each other.
 func NewTimerIndex(redisClient *goredis.Client, keyPrefix string) *TimerIndex {
 	return &TimerIndex{
-		redis:  redisClient,
-		timers: dueSet{redis: redisClient, key: keyPrefix + timersDueKey},
+		redis:   redisClient,
+		timers:  dueSet{redis: redisClient, key: keyPrefix + timersDueKey},
+		prompts: dueSet{redis: redisClient, key: keyPrefix + promptsDueKey},
 	}
 }
 
 // rebuild replaces the index with the given active timers.
 func (x *TimerIndex) rebuild(ctx context.Context, active []Task) error {
 	pipe := x.redis.TxPipeline()
-	pipe.Del(ctx, x.timers.key)
+	pipe.Del(ctx, x.timers.key, x.prompts.key)
 	for _, t := range active {
-		if t.TimerStatus == TimerRunning && t.TimerEndsAt != nil {
+		switch {
+		case t.TimerStatus == TimerRunning && t.TimerEndsAt != nil:
 			pipe.ZAdd(ctx, x.timers.key, goredis.Z{Score: score(*t.TimerEndsAt), Member: t.ID.String()})
+		case t.TimerStatus == TimerPrompting && t.PromptDeadlineAt != nil:
+			pipe.ZAdd(ctx, x.prompts.key, goredis.Z{Score: score(*t.PromptDeadlineAt), Member: t.ID.String()})
 		}
 	}
 	if _, err := pipe.Exec(ctx); err != nil {

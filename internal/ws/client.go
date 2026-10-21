@@ -33,6 +33,8 @@ type client struct {
 	closeOnce   sync.Once
 	closeCode   websocket.StatusCode
 	closeReason string
+	// flush makes writeLoop send what is already queued before closing.
+	flush bool
 }
 
 func newClient(conn *websocket.Conn, roomID, userID uuid.UUID) *client {
@@ -60,6 +62,17 @@ func (c *client) enqueue(msg []byte) {
 // times and from any goroutine; the first call wins.
 func (c *client) close(code websocket.StatusCode, reason string) {
 	c.closeOnce.Do(func() {
+		c.closeCode = code
+		c.closeReason = reason
+		close(c.done)
+	})
+}
+
+// closeAfterFlush is close, but messages enqueued before it (e.g. a final
+// kicked event) are still delivered first.
+func (c *client) closeAfterFlush(code websocket.StatusCode, reason string) {
+	c.closeOnce.Do(func() {
+		c.flush = true
 		c.closeCode = code
 		c.closeReason = reason
 		close(c.done)
@@ -100,6 +113,23 @@ func (c *client) readLoop(ctx context.Context) {
 	}
 }
 
+// drain writes whatever is queued without waiting for more.
+func (c *client) drain(ctx context.Context, writeTimeout time.Duration) {
+	for {
+		select {
+		case msg := <-c.send:
+			writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+			err := c.conn.Write(writeCtx, websocket.MessageText, msg)
+			cancel()
+			if err != nil {
+				return
+			}
+		default:
+			return
+		}
+	}
+}
+
 func (c *client) writeLoop(ctx context.Context, pingInterval, writeTimeout time.Duration) {
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
@@ -107,6 +137,9 @@ func (c *client) writeLoop(ctx context.Context, pingInterval, writeTimeout time.
 	for {
 		select {
 		case <-c.done:
+			if c.flush {
+				c.drain(ctx, writeTimeout)
+			}
 			_ = c.conn.Close(c.closeCode, c.closeReason)
 			return
 
