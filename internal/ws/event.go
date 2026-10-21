@@ -3,6 +3,7 @@ package ws
 import (
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 )
 
@@ -26,6 +27,10 @@ const (
 // LeftReasonDisconnect is the user_left reason when the user's last
 // connection to the room closed, cleanly or not.
 const LeftReasonDisconnect = "disconnect"
+
+// StatusRemovedFromRoom closes sockets of a user the server removed from the
+// room (kicked); clients must not reconnect without joining again.
+const StatusRemovedFromRoom websocket.StatusCode = 4001
 
 // tsLayout is RFC 3339 in UTC with fixed millisecond precision.
 const tsLayout = "2006-01-02T15:04:05.000Z07:00"

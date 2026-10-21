@@ -92,6 +92,7 @@ func main() {
 			AllowAnyOrigin: wsAllowAnyOrigin,
 		},
 	})
+	roomService.SetLeaveListener(wsHandler)
 
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:             db,

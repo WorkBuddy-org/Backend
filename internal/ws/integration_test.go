@@ -253,6 +253,58 @@ func TestWebSocketMultipleTabs(t *testing.T) {
 	}
 }
 
+func TestWebSocketRESTLeaveClosesSocketsAndBroadcastsOnce(t *testing.T) {
+	e := newTestEnv(t, ws.Config{})
+	roomID := e.createRoom()
+	otherRoomID := e.createRoom()
+	observer, observerToken := e.createUser("Observer")
+	alice, aliceToken := e.createUser("Alice")
+	marker, markerToken := e.createUser("Marker")
+	e.joinREST(roomID, observerToken)
+	e.joinREST(roomID, aliceToken)
+	e.joinREST(roomID, markerToken)
+	e.joinREST(otherRoomID, aliceToken)
+
+	connO := e.dial(roomID, observerToken)
+	expectType(t, readEvent(t, connO), ws.TypePresenceSnapshot)
+	tab1 := e.dial(roomID, aliceToken)
+	expectType(t, readEvent(t, tab1), ws.TypePresenceSnapshot)
+	expectJoined(t, readEvent(t, connO), alice.ID)
+	tab2 := e.dial(roomID, aliceToken)
+	expectType(t, readEvent(t, tab2), ws.TypePresenceSnapshot)
+	elsewhere := e.dial(otherRoomID, aliceToken)
+	expectType(t, readEvent(t, elsewhere), ws.TypePresenceSnapshot)
+
+	e.leaveREST(roomID, aliceToken)
+
+	// Both tabs are closed by the server with a normal closure.
+	for i, conn := range []*websocket.Conn{tab1, tab2} {
+		if code := expectClosed(t, conn); code != websocket.StatusNormalClosure {
+			t.Fatalf("tab%d: expected close 1000, got %d", i+1, code)
+		}
+	}
+
+	// Exactly one user_left: the marker's join is the very next event.
+	expectUserLeftReason(t, readEvent(t, connO), alice.ID, room.LeftReasonVoluntary)
+	connM := e.dial(roomID, markerToken)
+	expectType(t, readEvent(t, connM), ws.TypePresenceSnapshot)
+	expectJoined(t, readEvent(t, connO), marker.ID)
+
+	e.waitForConnections(roomID, 2)
+	if got := e.presence(roomID); !equalIDs(got, observer.ID, marker.ID) {
+		t.Fatalf("expected only observer and marker in presence, got %v", got)
+	}
+
+	// Her socket to another room is untouched.
+	if err := elsewhere.Write(context.Background(), websocket.MessageText, []byte(`{"type":"ping"}`)); err != nil {
+		t.Fatalf("ping other room: %v", err)
+	}
+	expectType(t, readEvent(t, elsewhere), ws.TypePong)
+	if got := e.presence(otherRoomID); !equalIDs(got, alice.ID) {
+		t.Fatalf("expected alice still present in the other room, got %v", got)
+	}
+}
+
 func TestWebSocketPingPongIgnoresOtherMessagesAndOutlivesServerTimeouts(t *testing.T) {
 	e := newTestEnv(t, ws.Config{})
 	roomID := e.createRoom()
@@ -386,6 +438,7 @@ func newTestEnv(t *testing.T, wsCfg ws.Config) *testEnv {
 		Rooms:    roomService,
 		Config:   wsCfg,
 	})
+	roomService.SetLeaveListener(wsHandler)
 
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:          db,
@@ -587,12 +640,31 @@ func expectJoined(t *testing.T, ev testEvent, userID uuid.UUID) {
 
 func expectUserLeft(t *testing.T, ev testEvent, userID uuid.UUID) {
 	t.Helper()
+	expectUserLeftReason(t, ev, userID, ws.LeftReasonDisconnect)
+}
+
+func expectUserLeftReason(t *testing.T, ev testEvent, userID uuid.UUID, reason string) {
+	t.Helper()
 	expectType(t, ev, ws.TypeUserLeft)
 	var data ws.UserLeftData
 	decodeData(t, ev, &data)
-	if data.UserID != userID || data.Reason != ws.LeftReasonDisconnect {
-		t.Fatalf("expected user_left %s/disconnect, got %+v", userID, data)
+	if data.UserID != userID || data.Reason != reason {
+		t.Fatalf("expected user_left %s/%s, got %+v", userID, reason, data)
 	}
+}
+
+// expectClosed reads until the connection is closed and returns the close
+// status. Any data message before the close fails the test.
+func expectClosed(t *testing.T, conn *websocket.Conn) websocket.StatusCode {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, data, err := conn.Read(ctx)
+	if err == nil {
+		t.Fatalf("expected connection to be closed, got message %s", data)
+	}
+	return websocket.CloseStatus(err)
 }
 
 func equalIDs(members []string, ids ...uuid.UUID) bool {

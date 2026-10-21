@@ -130,6 +130,31 @@ func (h *Hub) remove(c *client) bool {
 	return !h.userInRoomLocked(c.userID, c.roomID)
 }
 
+// removeUserFromRoom unregisters all of the user's connections to the room
+// and returns them, so the caller can close them. A later remove of any of
+// them returns false.
+func (h *Hub) removeUserFromRoom(userID, roomID uuid.UUID) []*client {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var removed []*client
+	for c := range h.users[userID] {
+		if c.roomID != roomID {
+			continue
+		}
+		removed = append(removed, c)
+		delete(h.users[userID], c)
+		delete(h.rooms[roomID], c)
+	}
+	if len(h.users[userID]) == 0 {
+		delete(h.users, userID)
+	}
+	if len(h.rooms[roomID]) == 0 {
+		delete(h.rooms, roomID)
+	}
+	return removed
+}
+
 func (h *Hub) userInRoom(userID, roomID uuid.UUID) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

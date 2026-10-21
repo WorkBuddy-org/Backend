@@ -109,9 +109,12 @@ Max client message size: 4096 bytes; larger frames close the socket with `1009`.
   several tabs sends nothing.
 - Apply `user_joined` / `user_left` idempotently keyed by `user_id` (adding a
   user already in the list or removing one that is absent is a no-op).
-- `POST /rooms/{room_id}/leave` does not close open sockets today; the client
-  should close its socket itself after leaving. (Server-side removal arrives
-  with `kicked`, see §5.)
+- `POST /rooms/{room_id}/leave` closes **all** of that user's sockets to the
+  room with `1000` ("left room"), removes them from presence, and broadcasts a
+  single `user_left` with `reason: "left_voluntarily"` to the rest of the room
+  (the leaving user's sockets do not receive it). The user's sockets to other
+  rooms are untouched. A handshake that races with the leave is closed with
+  `4001` right after the upgrade.
 
 ### Heartbeat
 
@@ -177,7 +180,7 @@ unless the user joins again via REST.
 | Value | Status | Meaning |
 |---|---|---|
 | `disconnect` | live | The user's last socket to the room closed (any cause). |
-| `left_voluntarily` | planned | Left via `POST /rooms/{id}/leave`. |
+| `left_voluntarily` | live | Left via `POST /rooms/{id}/leave`. |
 | `completed_no_extension` | planned | Task cycle ended and the user declined/ignored the extension prompt. |
 | `kicked` | planned | Removed by the server/moderation. |
 

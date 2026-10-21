@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -23,6 +24,10 @@ const (
 	// the request context can no longer be relied on.
 	cleanupTimeout = 5 * time.Second
 )
+
+// errNotInRoom means the user's participation closed between the handshake
+// check and registration.
+var errNotInRoom = errors.New("not in room")
 
 type TokenParser interface {
 	ParseAccessToken(token string) (*auth.AccessClaims, error)
@@ -143,7 +148,10 @@ func (h *Handler) connect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	c := newClient(conn, roomID, userID)
-	if err := h.join(ctx, c); err != nil {
+	if err := h.join(ctx, c); errors.Is(err, errNotInRoom) {
+		_ = conn.Close(StatusRemovedFromRoom, "not in room")
+		return
+	} else if err != nil {
 		slog.Error("websocket join failed", "room_id", roomID, "user_id", userID, "error", err)
 		_ = conn.Close(websocket.StatusInternalError, "presence unavailable")
 		return
@@ -174,6 +182,17 @@ func (h *Handler) authenticate(r *http.Request) (uuid.UUID, bool) {
 func (h *Handler) join(ctx context.Context, c *client) error {
 	h.lifecycle.Lock()
 	defer h.lifecycle.Unlock()
+
+	// Re-check under the lock: a REST leave that committed after the
+	// handshake check has already run removeFromRoom, which would not have
+	// seen this connection.
+	inRoom, err := h.rooms.HasOpenParticipation(ctx, c.roomID, c.userID)
+	if err != nil {
+		return err
+	}
+	if !inRoom {
+		return errNotInRoom
+	}
 
 	if err := h.presence.Add(ctx, c.roomID, c.userID); err != nil {
 		return err
@@ -211,6 +230,35 @@ func (h *Handler) leave(c *client) {
 	h.hub.Broadcast(c.roomID, NewEvent(TypeUserLeft, c.roomID, UserLeftData{
 		UserID: c.userID,
 		Reason: LeftReasonDisconnect,
+	}))
+}
+
+// UserLeft implements room.LeaveListener: after a user leaves the room via
+// REST, their sockets to it are closed (1000), presence is cleared and the
+// room gets a single user_left with the given reason.
+func (h *Handler) UserLeft(roomID, userID uuid.UUID, reason string) {
+	h.removeFromRoom(roomID, userID, reason, websocket.StatusNormalClosure, "left room")
+}
+
+// removeFromRoom drops every connection the user has to the room. The
+// connections' own leave() becomes a no-op because the hub no longer knows
+// them, so user_left is broadcast exactly once, here.
+func (h *Handler) removeFromRoom(roomID, userID uuid.UUID, reason string, code websocket.StatusCode, closeReason string) {
+	h.lifecycle.Lock()
+	defer h.lifecycle.Unlock()
+
+	removed := h.hub.removeUserFromRoom(userID, roomID)
+	for _, c := range removed {
+		c.close(code, closeReason)
+	}
+	if len(removed) == 0 {
+		return
+	}
+
+	h.removePresence(removed[0])
+	h.hub.Broadcast(roomID, NewEvent(TypeUserLeft, roomID, UserLeftData{
+		UserID: userID,
+		Reason: reason,
 	}))
 }
 
