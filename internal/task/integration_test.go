@@ -51,7 +51,9 @@ func TestCreateAndCompleteTask(t *testing.T) {
 	authService := auth.NewService(authRepo, tokenManager, auth.NewOAuthRegistry(auth.OAuthConfig{}), cfg.JWTRefreshTTL, cfg.FrontendCallbackURL, redisClient)
 
 	roomService := room.NewService(room.NewRepository(db))
-	taskService := task.NewService(task.NewRepository(db), roomService)
+	taskService := task.NewService(task.NewRepository(db), roomService, task.TimerDeps{
+		Index: task.NewTimerIndex(redisClient, "test:"+uuid.NewString()+":"),
+	})
 
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:          db,

@@ -3,18 +3,56 @@ package task
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/workbuddy/backend/internal/room"
+	"github.com/workbuddy/backend/internal/ws"
 )
 
-type Service struct {
-	repo  *Repository
-	rooms *room.Service
+// EventSink delivers WebSocket events; *ws.Hub implements it.
+type EventSink interface {
+	Broadcast(roomID uuid.UUID, ev ws.Event)
+	SendToUser(userID uuid.UUID, ev ws.Event)
 }
 
-func NewService(repo *Repository, rooms *room.Service) *Service {
-	return &Service{repo: repo, rooms: rooms}
+// TimerDeps configures the per-task timer.
+type TimerDeps struct {
+	// Index is required.
+	Index *TimerIndex
+	// Events receives timer events; nil drops them.
+	Events EventSink
+	// Clock defaults to time.Now. Tests inject a fake one.
+	Clock func() time.Time
+	// OnExpire defaults to broadcasting timer_ended.
+	OnExpire ExpiryHandler
+}
+
+type Service struct {
+	repo     *Repository
+	rooms    *room.Service
+	index    *TimerIndex
+	events   EventSink
+	clock    func() time.Time
+	onExpire ExpiryHandler
+}
+
+func NewService(repo *Repository, rooms *room.Service, timers TimerDeps) *Service {
+	s := &Service{
+		repo:     repo,
+		rooms:    rooms,
+		index:    timers.Index,
+		events:   timers.Events,
+		clock:    timers.Clock,
+		onExpire: timers.OnExpire,
+	}
+	if s.clock == nil {
+		s.clock = time.Now
+	}
+	if s.onExpire == nil {
+		s.onExpire = broadcastExpiry{s}
+	}
+	return s
 }
 
 // Create creates a task for userID in roomID. If the room has an active
@@ -55,7 +93,14 @@ func (s *Service) Update(ctx context.Context, taskID, userID uuid.UUID, update U
 		update.Text = &trimmed
 	}
 
-	return s.repo.Update(ctx, taskID, update)
+	updated, err := s.repo.Update(ctx, taskID, update)
+	if err != nil {
+		return nil, err
+	}
+	if existing.TimerActive() && updated.TimerStatus == TimerEnded {
+		s.stopTimer(ctx, updated)
+	}
+	return updated, nil
 }
 
 func (s *Service) ListByUser(ctx context.Context, userID uuid.UUID) ([]Task, error) {

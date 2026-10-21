@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -27,6 +28,7 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *auth.Middleware) 
 		r.Use(authMiddleware.RequireAuth)
 		r.Post("/rooms/{id}/tasks", h.create)
 		r.Patch("/tasks/{id}", h.update)
+		r.Post("/tasks/{id}/start", h.startTimer)
 		r.Get("/tasks/me", h.listMine)
 	})
 }
@@ -41,6 +43,12 @@ type taskDTO struct {
 	UpdatedAt        time.Time  `json:"updated_at"`
 	ExtendedCount    int        `json:"extended_count"`
 	ExtraMinutesUsed int        `json:"extra_minutes_used"`
+
+	TimerStatus          string     `json:"timer_status"`
+	TimerDurationMinutes *int       `json:"timer_duration_minutes,omitempty"`
+	TimerStartedAt       *time.Time `json:"timer_started_at,omitempty"`
+	TimerEndsAt          *time.Time `json:"timer_ends_at,omitempty"`
+	PromptDeadlineAt     *time.Time `json:"prompt_deadline_at,omitempty"`
 }
 
 func toTaskDTO(t *Task) taskDTO {
@@ -54,6 +62,12 @@ func toTaskDTO(t *Task) taskDTO {
 		UpdatedAt:        t.UpdatedAt,
 		ExtendedCount:    t.ExtendedCount,
 		ExtraMinutesUsed: t.ExtraMinutesUsed,
+
+		TimerStatus:          t.TimerStatus,
+		TimerDurationMinutes: t.TimerDurationMinutes,
+		TimerStartedAt:       t.TimerStartedAt,
+		TimerEndsAt:          t.TimerEndsAt,
+		PromptDeadlineAt:     t.PromptDeadlineAt,
 	}
 }
 
@@ -136,6 +150,56 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.JSON(w, http.StatusOK, toTaskDTO(t))
+}
+
+type startTimerRequest struct {
+	DurationMinutes int `json:"duration_minutes"`
+}
+
+func (h *Handler) startTimer(w http.ResponseWriter, r *http.Request) {
+	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid task id")
+		return
+	}
+
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		return
+	}
+
+	var req startTimerRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	t, err := h.service.StartTimer(r.Context(), taskID, userID, req.DurationMinutes)
+	if err != nil {
+		writeTimerError(w, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, toTaskDTO(t))
+}
+
+// writeTimerError maps timer errors to statuses; anything unknown is a 500
+// without internal details.
+func writeTimerError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrInvalidDuration):
+		httpx.Error(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, ErrTaskNotFound):
+		httpx.Error(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrForbidden):
+		httpx.Error(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, ErrTaskCompleted), errors.Is(err, ErrNotInRoom), errors.Is(err, ErrTimerActive):
+		httpx.Error(w, http.StatusConflict, err.Error())
+	default:
+		slog.Error("task timer request failed", "error", err)
+		httpx.Error(w, http.StatusInternalServerError, "internal error")
+	}
 }
 
 func (h *Handler) listMine(w http.ResponseWriter, r *http.Request) {

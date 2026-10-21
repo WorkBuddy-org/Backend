@@ -65,7 +65,6 @@ func main() {
 
 	roomService := room.NewService(room.NewRepository(db))
 	inviteService := invite.NewService(invite.NewRepository(db))
-	taskService := task.NewService(task.NewRepository(db), roomService)
 	profileService := profile.NewService(profile.NewRepository(db))
 
 	// Presence lives in Redis but the hub is in memory, so with a single
@@ -93,6 +92,21 @@ func main() {
 		},
 	})
 	roomService.SetLeaveListener(wsHandler)
+
+	taskService := task.NewService(task.NewRepository(db), roomService, task.TimerDeps{
+		Index:  task.NewTimerIndex(redisClient, ""),
+		Events: wsHub,
+	})
+
+	// The scheduler rebuilds its Redis index from Postgres before polling, so
+	// timers survive restarts; overdue ones fire on the first tick.
+	schedulerCtx, stopScheduler := context.WithCancel(ctx)
+	defer stopScheduler()
+	timerScheduler := task.NewScheduler(taskService, task.DefaultSchedulerInterval)
+	if err := timerScheduler.Start(schedulerCtx); err != nil {
+		slog.Error("failed to start task timer scheduler", "error", err)
+		os.Exit(1)
+	}
 
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:             db,
@@ -124,6 +138,9 @@ func main() {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	stopScheduler()
+	timerScheduler.Wait()
 
 	// Shutdown does not close hijacked connections, so close sockets first;
 	// their disconnect handling clears presence while Redis is still open.

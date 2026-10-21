@@ -6,4 +6,9 @@ var (
 	ErrTaskNotFound = errors.New("task not found")
 	ErrForbidden    = errors.New("not the owner of this task")
 	ErrTextRequired = errors.New("text is required")
+
+	ErrInvalidDuration = errors.New("duration_minutes must be one of 25, 50, 90")
+	ErrTaskCompleted   = errors.New("task is already completed")
+	ErrNotInRoom       = errors.New("join the task's room before starting a timer")
+	ErrTimerActive     = errors.New("a timer is already running for this user")
 )
