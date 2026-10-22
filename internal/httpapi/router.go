@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/workbuddy/backend/internal/auth"
+	"github.com/workbuddy/backend/internal/call"
 	"github.com/workbuddy/backend/internal/chat"
 	"github.com/workbuddy/backend/internal/invite"
 	"github.com/workbuddy/backend/internal/platform/httpx"
@@ -35,6 +36,7 @@ type RouterDeps struct {
 	ProfileHandler *profile.Handler
 	ChatHandler    *chat.Handler
 	WSHandler      *ws.Handler
+	CallHandler    *call.Handler
 }
 
 func NewRouter(deps RouterDeps) http.Handler {
@@ -63,6 +65,9 @@ func NewRouter(deps RouterDeps) http.Handler {
 	}
 	if deps.WSHandler != nil {
 		deps.WSHandler.RegisterRoutes(r)
+	}
+	if deps.CallHandler != nil {
+		deps.CallHandler.RegisterRoutes(r, deps.AuthMW)
 	}
 
 	return r
