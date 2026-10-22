@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -267,7 +268,12 @@ func (h *Handler) listMine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tasks, err := h.service.ListByUser(r.Context(), userID)
+	limit, offset, ok := parsePage(w, r)
+	if !ok {
+		return
+	}
+
+	tasks, err := h.service.ListByUser(r.Context(), userID, limit, offset)
 	if err != nil {
 		httpx.Error(w, http.StatusInternalServerError, "failed to list tasks")
 		return
@@ -278,6 +284,40 @@ func (h *Handler) listMine(w http.ResponseWriter, r *http.Request) {
 		dtos[i] = toTaskDTO(&tasks[i])
 	}
 	httpx.JSON(w, http.StatusOK, dtos)
+}
+
+// Page sizes for GET /tasks/me.
+const (
+	DefaultListLimit = 50
+	MaxListLimit     = 100
+)
+
+// parsePage reads ?limit= and ?offset=. Limits above the maximum are capped
+// rather than rejected, like chat history. It writes the 400 itself and
+// returns ok=false on bad input.
+func parsePage(w http.ResponseWriter, r *http.Request) (limit, offset int, ok bool) {
+	query := r.URL.Query()
+
+	limit = DefaultListLimit
+	if raw := query.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			httpx.Error(w, http.StatusBadRequest, "limit must be a positive integer")
+			return 0, 0, false
+		}
+		limit = min(n, MaxListLimit)
+	}
+
+	if raw := query.Get("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			httpx.Error(w, http.StatusBadRequest, "offset must be a non-negative integer")
+			return 0, 0, false
+		}
+		offset = n
+	}
+
+	return limit, offset, true
 }
 
 func decodeJSON(r *http.Request, dst any) error {

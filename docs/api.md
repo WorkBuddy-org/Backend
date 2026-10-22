@@ -437,12 +437,21 @@ Errors: `400 invalid room id`, `400 text is required`,
 
 ### `GET /tasks/me`
 
-All of the current user's tasks across rooms, newest first. **Auth:** required.
-No pagination.
+The current user's tasks across rooms, newest first, one page at a time.
+**Auth:** required.
 
-`200 OK` → array of task objects (`[]` when none).
+| Param | Default | Rules |
+|---|---|---|
+| `limit` | 50 | Positive integer. Values above 100 are capped to 100. |
+| `offset` | 0 | Non-negative integer: how many tasks to skip. |
 
-Errors: `401`.
+`200 OK` → a plain array of task objects (`[]` when none, or past the end).
+There is no total count: a page shorter than `limit` is the last one. To load
+more, request `?offset=<items loaded so far>`. Tasks created meanwhile shift
+the offsets, so de-duplicate by `id`.
+
+Errors: `400 limit must be a positive integer`,
+`400 offset must be a non-negative integer`, `401`.
 
 ### `PATCH /tasks/{id}`
 
