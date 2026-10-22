@@ -333,10 +333,13 @@ with code `4001`, the user's participation is closed with
 }
 ```
 
-### `chat_message` — planned, broadcast (including the sender's sockets)
+### `chat_message` — live, broadcast (including the sender's sockets)
 
-Sent after a message is created via REST. The sender gets it too, so render
-from this event (or de-duplicate by `message_id`).
+Sent after a message is created with `POST /rooms/{room_id}/messages`. The
+sender gets it too, so either render from this event or render the REST
+response and de-duplicate by `id`. `data` has the same fields as a message in
+the REST API (see "Chat REST API" below); `user_name` is the author's name at
+send time.
 
 ```json
 {
@@ -344,14 +347,47 @@ from this event (or de-duplicate by `message_id`).
   "room_id": "3f2b8c1e-6a4d-4d5e-9b1a-2c7e8f9a0b1c",
   "ts": "2026-10-20T13:10:42.120Z",
   "data": {
-    "message_id": "e1d2c3b4-a5f6-4e7d-8c9b-0a1f2e3d4c5b",
+    "id": "e1d2c3b4-a5f6-4e7d-8c9b-0a1f2e3d4c5b",
+    "room_id": "3f2b8c1e-6a4d-4d5e-9b1a-2c7e8f9a0b1c",
     "user_id": "8d3c0f7a-1b2e-4c5d-9e8f-0a1b2c3d4e5f",
-    "name": "Alice",
+    "user_name": "Alice",
     "text": "Anyone up for a 5 min break after this one?",
     "created_at": "2026-10-20T13:10:42.100Z"
   }
 }
 ```
+
+#### Chat REST API
+
+Text only (no files, images, edits, deletes or delivery/read statuses in the
+MVP). Both endpoints require `Authorization: Bearer …` and an **open
+participation** in the room (joined and not left/kicked); otherwise `403
+{"error":"join the room before using its chat"}`. A room that does not exist
+has no participants, so it also gets 403.
+
+**Send:** `POST /rooms/{room_id}/messages` with `{"text": "…"}`.
+
+- `text` is trimmed; after trimming it must be 1–2000 characters (Unicode
+  code points, not bytes). Empty → `400 {"error":"text is required"}`, longer
+  → `400 {"error":"text must be at most 2000 characters"}`. Unknown fields →
+  `400`.
+- `201` with the stored message:
+  `{"id", "room_id", "user_id", "user_name", "text", "created_at"}`
+  (`created_at` is RFC 3339 with the database's precision).
+
+**History:** `GET /rooms/{room_id}/messages?before={message_id}&limit={n}`.
+
+- Newest first, ordered by `(created_at, id)`. Response:
+  `{"items": [message, …], "next_cursor": "<message id>" | null}`. `items` is
+  `[]` when empty, never `null`.
+- `limit`: default 50, values above 100 are capped to 100; `0`, negative or
+  non-integer → `400`.
+- `before`: omit for the newest page; to load older messages pass the
+  previous response's `next_cursor`. `next_cursor` is `null` when there are no
+  older messages. A `before` that is not the id of a message in this room →
+  `400 {"error":"before must be a message id from this room"}`.
+- Messages that arrive while paging do not shift the cursor; merge them from
+  `chat_message` events (de-duplicate by `id`).
 
 ---
 

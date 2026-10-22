@@ -10,6 +10,7 @@ import (
 
 	"github.com/workbuddy/backend/internal/auth"
 	"github.com/workbuddy/backend/internal/call"
+	"github.com/workbuddy/backend/internal/chat"
 	"github.com/workbuddy/backend/internal/config"
 	"github.com/workbuddy/backend/internal/httpapi"
 	"github.com/workbuddy/backend/internal/invite"
@@ -131,6 +132,7 @@ func main() {
 		InviteHandler:  invite.NewHandler(inviteService),
 		TaskHandler:    task.NewHandler(taskService),
 		ProfileHandler: profile.NewHandler(profileService),
+		ChatHandler:    chat.NewHandler(chat.NewService(chat.NewRepository(db), roomService, wsHub)),
 		WSHandler:      wsHandler,
 		CallHandler:    call.NewHandler(callService),
 	})
