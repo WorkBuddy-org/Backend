@@ -98,7 +98,8 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch {
-		case errors.Is(err, ErrNoFields):
+		case errors.Is(err, ErrNoFields), errors.Is(err, ErrInvalidName), errors.Is(err, ErrRoleTooLong),
+			errors.Is(err, ErrStackTooLong), errors.Is(err, ErrInvalidTimezone):
 			status = http.StatusBadRequest
 		case errors.Is(err, ErrUserNotFound):
 			status = http.StatusNotFound

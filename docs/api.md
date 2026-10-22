@@ -225,20 +225,23 @@ Errors: `401`, `404 user not found`.
 
 **Auth:** required. Partial update. Send only the fields to change.
 
-| Field | Type | Rules |
+| Field | Type | Rules (after trimming whitespace; lengths in characters) |
 |---|---|---|
-| `name` | string | Trimmed. Not otherwise validated. |
-| `role` | string | Trimmed. |
-| `stack` | string | Trimmed. |
-| `timezone` | string | Trimmed. Not validated (IANA name expected, e.g. `Europe/Berlin`). |
+| `name` | string | 1–100 characters. Can't be empty. |
+| `role` | string | 0–100 characters. `""` clears it. |
+| `stack` | string | 0–200 characters. `""` clears it. |
+| `timezone` | string | A valid IANA time zone name, e.g. `Europe/Berlin`, `America/Argentina/Buenos_Aires`, `UTC`. Case-sensitive. Offsets like `+03:00`, `""` and `Local` are rejected. |
 
-A field that is absent or `null` is left unchanged. A field can't be cleared
-back to "unset"; sending `""` stores an empty string.
+A field that is absent or `null` is left unchanged. A cleared `role`/`stack`
+comes back as `""`. If any field is invalid, nothing is saved.
 
 `200 OK` → the full profile (same shape as `GET /profile`).
 
-Errors: `400 no fields to update` (none of the four fields present),
-`400 invalid request body`, `401`, `404 user not found`.
+Errors (all `400` unless noted): `no fields to update` (none of the four
+fields present), `name must be 1-100 characters`,
+`role must be at most 100 characters`, `stack must be at most 200 characters`,
+`timezone must be a valid IANA time zone name, e.g. Europe/Berlin`,
+`invalid request body`; `401`; `404 user not found`.
 
 ## Rooms
 
