@@ -197,9 +197,12 @@ unless the user joins again via REST.
 }
 ```
 
-### `timer_started` — planned, broadcast
+### `timer_started` — live, broadcast
 
-A focus or break interval of the room's shared timer started.
+A participant started the timer of one of their tasks via
+`POST /tasks/{task_id}/start` with `{"duration_minutes": 25 | 50 | 90}`.
+Timers are **per task** (each participant runs their own); a user has at most
+one running/prompting timer at a time.
 
 ```json
 {
@@ -207,19 +210,26 @@ A focus or break interval of the room's shared timer started.
   "room_id": "3f2b8c1e-6a4d-4d5e-9b1a-2c7e8f9a0b1c",
   "ts": "2026-10-20T13:00:00.004Z",
   "data": {
-    "session_id": "0c9b8a7f-6e5d-4c3b-2a19-08f7e6d5c4b3",
-    "status": "focus",
+    "task_id": "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
+    "user_id": "8d3c0f7a-1b2e-4c5d-9e8f-0a1b2c3d4e5f",
     "started_at": "2026-10-20T13:00:00.000Z",
     "ends_at": "2026-10-20T13:25:00.000Z",
-    "duration_seconds": 1500
+    "duration_minutes": 25,
+    "server_time": "2026-10-20T13:00:00.004Z"
   }
 }
 ```
 
-- `status`: `focus` | `break`. Compute the countdown locally from `ends_at`;
-  there are no per-second ticks.
+- There are **no per-second ticks**. Count down locally from `ends_at`,
+  corrected for clock skew: `remaining = ends_at - (Date.now() + (server_time - receivedAt))`,
+  i.e. compute `offset = server_time - local time at receipt` once per event.
+- The countdown keeps running if the user leaves the room or loses the
+  socket; the timer only stops when it expires or the task is completed.
+- Current timer state is also on the task in REST (`timer_status`,
+  `timer_duration_minutes`, `timer_started_at`, `timer_ends_at`), so a client
+  that (re)connects mid-timer reads it from `GET /tasks/me`.
 
-### `timer_ended` — planned, broadcast
+### `timer_ended` — live, broadcast
 
 ```json
 {
@@ -227,15 +237,19 @@ A focus or break interval of the room's shared timer started.
   "room_id": "3f2b8c1e-6a4d-4d5e-9b1a-2c7e8f9a0b1c",
   "ts": "2026-10-20T13:25:00.010Z",
   "data": {
-    "session_id": "0c9b8a7f-6e5d-4c3b-2a19-08f7e6d5c4b3",
-    "status": "focus",
-    "ended_at": "2026-10-20T13:25:00.000Z"
+    "task_id": "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
+    "user_id": "8d3c0f7a-1b2e-4c5d-9e8f-0a1b2c3d4e5f",
+    "reason": "expired",
+    "server_time": "2026-10-20T13:25:00.010Z"
   }
 }
 ```
 
-- `status` is the interval that just ended. The next interval, if any,
-  arrives as its own `timer_started`.
+- `reason`: `expired` (reached `ends_at`; the task's `timer_status` becomes
+  `prompting`) | `completed` (the task was completed via
+  `PATCH /tasks/{id}` while its timer ran; `timer_status` becomes `ended`).
+- Expiry is detected by a 1 s server poll, so the event may arrive up to ~1 s
+  after `ends_at`.
 
 ### `task_extension_prompt` — planned, **targeted** (only the task owner's sockets in this room)
 

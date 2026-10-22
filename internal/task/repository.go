@@ -4,11 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const uniqueViolationCode = "23505"
+
+// taskColumns is the column list scanTask expects, in order.
+const taskColumns = `id, user_id, room_id, session_id, text, completed_at, created_at, updated_at,
+		extended_count, extra_minutes_used,
+		timer_status, timer_duration_minutes, timer_started_at, timer_ends_at, prompt_deadline_at`
 
 type Repository struct {
 	db *pgxpool.Pool
@@ -29,8 +38,7 @@ func (r *Repository) Create(ctx context.Context, userID, roomID uuid.UUID, sessi
 	const query = `
 		INSERT INTO tasks (user_id, room_id, session_id, text)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, user_id, room_id, session_id, text, completed_at, created_at, updated_at, extended_count, extra_minutes_used
-	`
+		RETURNING ` + taskColumns
 
 	row := r.db.QueryRow(ctx, query, userID, roomID, sessionID, text)
 	return scanTask(row)
@@ -38,7 +46,7 @@ func (r *Repository) Create(ctx context.Context, userID, roomID uuid.UUID, sessi
 
 func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*Task, error) {
 	const query = `
-		SELECT id, user_id, room_id, session_id, text, completed_at, created_at, updated_at, extended_count, extra_minutes_used
+		SELECT ` + taskColumns + `
 		FROM tasks
 		WHERE id = $1
 	`
@@ -49,7 +57,7 @@ func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*Task, error) 
 
 func (r *Repository) ListByUser(ctx context.Context, userID uuid.UUID) ([]Task, error) {
 	const query = `
-		SELECT id, user_id, room_id, session_id, text, completed_at, created_at, updated_at, extended_count, extra_minutes_used
+		SELECT ` + taskColumns + `
 		FROM tasks
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -59,6 +67,123 @@ func (r *Repository) ListByUser(ctx context.Context, userID uuid.UUID) ([]Task, 
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
+	return collectTasks(rows, "list tasks")
+}
+
+// Update applies the change. Completing a task also ends its timer if it is
+// running or prompting.
+func (r *Repository) Update(ctx context.Context, id uuid.UUID, update Update) (*Task, error) {
+	const query = `
+		UPDATE tasks
+		SET
+			text = COALESCE($2::text, text),
+			completed_at = CASE
+				WHEN $3::boolean IS NULL THEN completed_at
+				WHEN $3::boolean THEN now()
+				ELSE NULL
+			END,
+			timer_status = CASE
+				WHEN $3::boolean AND timer_status IN ('running', 'prompting') THEN 'ended'
+				ELSE timer_status
+			END,
+			prompt_deadline_at = CASE
+				WHEN $3::boolean AND timer_status IN ('running', 'prompting') THEN NULL
+				ELSE prompt_deadline_at
+			END,
+			updated_at = now()
+		WHERE id = $1
+		RETURNING ` + taskColumns
+
+	row := r.db.QueryRow(ctx, query, id, update.Text, update.Completed)
+	return scanTask(row)
+}
+
+// StartTimer moves the task's timer to running. It returns ErrTimerActive
+// when the task's own timer or another of the user's timers is already
+// running or prompting (the latter via the one-active-timer unique index),
+// and ErrTaskCompleted when the task is completed.
+func (r *Repository) StartTimer(ctx context.Context, id uuid.UUID, minutes int, startedAt, endsAt time.Time) (*Task, error) {
+	const query = `
+		UPDATE tasks
+		SET timer_status = 'running',
+			timer_duration_minutes = $2,
+			timer_started_at = $3,
+			timer_ends_at = $4,
+			prompt_deadline_at = NULL,
+			updated_at = now()
+		WHERE id = $1
+			AND completed_at IS NULL
+			AND timer_status NOT IN ('running', 'prompting')
+		RETURNING ` + taskColumns
+
+	t, err := scanTask(r.db.QueryRow(ctx, query, id, minutes, startedAt, endsAt))
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode {
+		return nil, ErrTimerActive
+	}
+	if !errors.Is(err, ErrTaskNotFound) {
+		return t, err
+	}
+
+	// No row matched: tell the caller which condition failed.
+	existing, err := r.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if existing.CompletedAt != nil {
+		return nil, ErrTaskCompleted
+	}
+	return nil, ErrTimerActive
+}
+
+// ResetTimer puts a running timer back to idle. Used when the timer could not
+// be scheduled after it was stored.
+func (r *Repository) ResetTimer(ctx context.Context, id uuid.UUID) error {
+	const query = `
+		UPDATE tasks
+		SET timer_status = 'idle',
+			timer_duration_minutes = NULL,
+			timer_started_at = NULL,
+			timer_ends_at = NULL,
+			updated_at = now()
+		WHERE id = $1 AND timer_status = 'running'
+	`
+
+	if _, err := r.db.Exec(ctx, query, id); err != nil {
+		return fmt.Errorf("reset timer: %w", err)
+	}
+	return nil
+}
+
+// ExpireTimer moves a running timer whose end has passed to prompting. It
+// returns ErrTaskNotFound when there is nothing to expire: the timer is no
+// longer running, or it was extended past now.
+func (r *Repository) ExpireTimer(ctx context.Context, id uuid.UUID, now time.Time) (*Task, error) {
+	const query = `
+		UPDATE tasks
+		SET timer_status = 'prompting', updated_at = now()
+		WHERE id = $1 AND timer_status = 'running' AND timer_ends_at <= $2
+		RETURNING ` + taskColumns
+
+	return scanTask(r.db.QueryRow(ctx, query, id, now))
+}
+
+// ListActiveTimers returns every task whose timer is running or prompting.
+func (r *Repository) ListActiveTimers(ctx context.Context) ([]Task, error) {
+	const query = `
+		SELECT ` + taskColumns + `
+		FROM tasks
+		WHERE timer_status IN ('running', 'prompting')
+	`
+
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list active timers: %w", err)
+	}
+	return collectTasks(rows, "list active timers")
+}
+
+func collectTasks(rows pgx.Rows, op string) ([]Task, error) {
 	defer rows.Close()
 
 	var tasks []Task
@@ -70,29 +195,10 @@ func (r *Repository) ListByUser(ctx context.Context, userID uuid.UUID) ([]Task, 
 		tasks = append(tasks, *t)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list tasks: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 
 	return tasks, nil
-}
-
-func (r *Repository) Update(ctx context.Context, id uuid.UUID, update Update) (*Task, error) {
-	const query = `
-		UPDATE tasks
-		SET
-			text = COALESCE($2::text, text),
-			completed_at = CASE
-				WHEN $3::boolean IS NULL THEN completed_at
-				WHEN $3::boolean THEN now()
-				ELSE NULL
-			END,
-			updated_at = now()
-		WHERE id = $1
-		RETURNING id, user_id, room_id, session_id, text, completed_at, created_at, updated_at, extended_count, extra_minutes_used
-	`
-
-	row := r.db.QueryRow(ctx, query, id, update.Text, update.Completed)
-	return scanTask(row)
 }
 
 func scanTask(row pgx.Row) (*Task, error) {
@@ -100,6 +206,7 @@ func scanTask(row pgx.Row) (*Task, error) {
 	err := row.Scan(
 		&t.ID, &t.UserID, &t.RoomID, &t.SessionID, &t.Text, &t.CompletedAt,
 		&t.CreatedAt, &t.UpdatedAt, &t.ExtendedCount, &t.ExtraMinutesUsed,
+		&t.TimerStatus, &t.TimerDurationMinutes, &t.TimerStartedAt, &t.TimerEndsAt, &t.PromptDeadlineAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrTaskNotFound

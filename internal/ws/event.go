@@ -57,6 +57,12 @@ func NewEvent(eventType string, roomID uuid.UUID, data any) Event {
 	}
 }
 
+// FormatTime renders t the way the envelope's ts is rendered: RFC 3339, UTC,
+// millisecond precision.
+func FormatTime(t time.Time) string {
+	return t.UTC().Format(tsLayout)
+}
+
 type PresenceUser struct {
 	UserID uuid.UUID `json:"user_id"`
 	Name   string    `json:"name"`
@@ -74,6 +80,30 @@ type UserJoinedData struct {
 type UserLeftData struct {
 	UserID uuid.UUID `json:"user_id"`
 	Reason string    `json:"reason"`
+}
+
+// TimerStartedData announces a task timer. Clients count down locally from
+// ends_at; server_time lets them correct for clock skew.
+type TimerStartedData struct {
+	TaskID          uuid.UUID `json:"task_id"`
+	UserID          uuid.UUID `json:"user_id"`
+	StartedAt       string    `json:"started_at"`
+	EndsAt          string    `json:"ends_at"`
+	DurationMinutes int       `json:"duration_minutes"`
+	ServerTime      string    `json:"server_time"`
+}
+
+// timer_ended reasons.
+const (
+	TimerEndedExpired   = "expired"
+	TimerEndedCompleted = "completed"
+)
+
+type TimerEndedData struct {
+	TaskID     uuid.UUID `json:"task_id"`
+	UserID     uuid.UUID `json:"user_id"`
+	Reason     string    `json:"reason"`
+	ServerTime string    `json:"server_time"`
 }
 
 // clientMessage is the only shape the server reads from clients; anything
