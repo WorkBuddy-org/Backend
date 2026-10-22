@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/workbuddy/backend/internal/auth"
+	"github.com/workbuddy/backend/internal/call"
+	"github.com/workbuddy/backend/internal/chat"
 	"github.com/workbuddy/backend/internal/config"
 	"github.com/workbuddy/backend/internal/httpapi"
 	"github.com/workbuddy/backend/internal/invite"
@@ -112,6 +114,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	callService := call.NewService(call.Config{
+		URL:       cfg.LiveKitURL,
+		APIKey:    cfg.LiveKitAPIKey,
+		APISecret: cfg.LiveKitAPISecret,
+	}, roomService, authRepo)
+	if !callService.Configured() {
+		slog.Warn("LIVEKIT_URL, LIVEKIT_API_KEY or LIVEKIT_API_SECRET is empty: call token requests will return 503")
+	}
+
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:             db,
 		Redis:          redisClient,
@@ -121,7 +132,9 @@ func main() {
 		InviteHandler:  invite.NewHandler(inviteService),
 		TaskHandler:    task.NewHandler(taskService),
 		ProfileHandler: profile.NewHandler(profileService),
+		ChatHandler:    chat.NewHandler(chat.NewService(chat.NewRepository(db), roomService, wsHub)),
 		WSHandler:      wsHandler,
+		CallHandler:    call.NewHandler(callService),
 	})
 	addr := ":" + cfg.Port
 	srv := server.New(addr, router)

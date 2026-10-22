@@ -134,6 +134,16 @@ type KickedData struct {
 	Reason string `json:"reason"`
 }
 
+// ChatMessageData is a chat message as stored; created_at uses FormatTime.
+type ChatMessageData struct {
+	ID        uuid.UUID `json:"id"`
+	RoomID    uuid.UUID `json:"room_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	UserName  string    `json:"user_name"`
+	Text      string    `json:"text"`
+	CreatedAt string    `json:"created_at"`
+}
+
 // clientMessage is the only shape the server reads from clients; anything
 // other than {"type":"ping"} is ignored.
 type clientMessage struct {

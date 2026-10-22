@@ -42,6 +42,12 @@ type Config struct {
 	ExtensionPromptTimeout time.Duration
 	// ExtensionMaxCount caps extensions per task.
 	ExtensionMaxCount int
+
+	// LiveKit settings for audio/video calls. When any is empty, call token
+	// requests answer 503.
+	LiveKitURL       string
+	LiveKitAPIKey    string
+	LiveKitAPISecret string
 }
 
 func Load() (*Config, error) {
@@ -71,6 +77,10 @@ func Load() (*Config, error) {
 		FrontendCallbackURL: getEnv("FRONTEND_CALLBACK_URL", ""),
 
 		WSAllowedOrigins: splitList(getEnv("WS_ALLOWED_ORIGINS", "")),
+
+		LiveKitURL:       getEnv("LIVEKIT_URL", ""),
+		LiveKitAPIKey:    getEnv("LIVEKIT_API_KEY", ""),
+		LiveKitAPISecret: getEnv("LIVEKIT_API_SECRET", ""),
 	}
 
 	var err error
