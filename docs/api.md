@@ -278,16 +278,11 @@ Errors: `401`.
 
 ```json
 {
-  "room": { "id": "0b6e…", "name": "Deep Focus", "type": "focus", "tags": ["quiet"], "created_at": "…" },
-  "active_session": {
-    "id": "…", "room_id": "0b6e…", "started_at": "…", "status": "focus"
-  }
+  "room": { "id": "0b6e…", "name": "Deep Focus", "type": "focus", "tags": ["quiet"], "created_at": "…" }
 }
 ```
 
-`active_session` is *omitted when empty* (no session running). Its `status` is
-`"focus"` or `"break"`, and `ended_at` is omitted while it's running. Note: the
-current server never starts room sessions, so this field is absent in practice.
+Rooms have no sessions: timers are per task (see [Timer flow](#timer-flow)).
 
 Errors: `400 invalid room id`, `401`, `404 room not found`.
 
@@ -316,8 +311,8 @@ chat, starting a task timer, and getting a call token.
 }
 ```
 
-`active_session` (as in `GET /rooms/{id}`) and the participation's
-`session_id`, `left_at`, `left_reason` are *omitted when empty*.
+The participation's `left_at` and `left_reason` are *omitted when empty*
+(always, for an open participation).
 
 Errors: `400 invalid room id`, `401`, `404 room not found`.
 

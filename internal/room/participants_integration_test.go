@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/workbuddy/backend/internal/auth"
 	"github.com/workbuddy/backend/internal/config"
 	"github.com/workbuddy/backend/internal/httpapi"
@@ -25,7 +26,16 @@ type participantResponse struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
-func TestListParticipants(t *testing.T) {
+type roomEnv struct {
+	t      *testing.T
+	db     *pgxpool.Pool
+	rooms  *room.Service
+	router http.Handler
+	tokens *auth.TokenManager
+}
+
+func newRoomEnv(t *testing.T) *roomEnv {
+	t.Helper()
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("DATABASE_URL is not set")
@@ -57,32 +67,45 @@ func TestListParticipants(t *testing.T) {
 		AuthMW:      auth.NewMiddleware(tokenManager),
 		RoomHandler: room.NewHandler(roomService),
 	})
+	return &roomEnv{t: t, db: db, rooms: roomService, router: router, tokens: tokenManager}
+}
 
-	newUser := func(name string) (uuid.UUID, string) {
-		t.Helper()
-		email := "participants-" + uuid.NewString() + "@example.com"
-		u, err := auth.NewRepository(db).CreateUser(ctx, &auth.OAuthProfile{
-			Provider: user.OAuthProviderGoogle, OAuthID: email, Email: email, Name: name,
-		})
-		if err != nil {
-			t.Fatalf("create user: %v", err)
-		}
-		t.Cleanup(func() { _, _ = db.Exec(context.Background(), "DELETE FROM users WHERE id = $1", u.ID) })
-		token, err := tokenManager.IssueAccessToken(u.ID, u.Email)
-		if err != nil {
-			t.Fatalf("issue token: %v", err)
-		}
-		return u.ID, token
+func (e *roomEnv) newUser(name string) (uuid.UUID, string) {
+	e.t.Helper()
+	ctx := context.Background()
+	email := "rooms-" + uuid.NewString() + "@example.com"
+	u, err := auth.NewRepository(e.db).CreateUser(ctx, &auth.OAuthProfile{
+		Provider: user.OAuthProviderGoogle, OAuthID: email, Email: email, Name: name,
+	})
+	if err != nil {
+		e.t.Fatalf("create user: %v", err)
 	}
+	e.t.Cleanup(func() { _, _ = e.db.Exec(context.Background(), "DELETE FROM users WHERE id = $1", u.ID) })
+	token, err := e.tokens.IssueAccessToken(u.ID, u.Email)
+	if err != nil {
+		e.t.Fatalf("issue token: %v", err)
+	}
+	return u.ID, token
+}
+
+func (e *roomEnv) do(method, path, token string) (int, string) {
+	e.t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	e.router.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String()
+}
+
+func TestListParticipants(t *testing.T) {
+	e := newRoomEnv(t)
+	ctx := context.Background()
+	db, roomService, newUser := e.db, e.rooms, e.newUser
 	get := func(roomID, token string) (int, string) {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/rooms/"+roomID+"/participants", nil)
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
-		return rec.Code, rec.Body.String()
+		return e.do(http.MethodGet, "/rooms/"+roomID+"/participants", token)
 	}
 	list := func(roomID, token string) []participantResponse {
 		t.Helper()
@@ -112,7 +135,9 @@ func TestListParticipants(t *testing.T) {
 	if _, err := db.Exec(ctx, `INSERT INTO room_participations (user_id, room_id) VALUES ($1, $2)`, aliceID, roomID); err != nil {
 		t.Fatalf("insert duplicate participation: %v", err)
 	}
-	t.Cleanup(func() { _, _ = db.Exec(context.Background(), "DELETE FROM room_participations WHERE room_id = $1", roomID) })
+	t.Cleanup(func() {
+		_, _ = db.Exec(context.Background(), "DELETE FROM room_participations WHERE room_id = $1", roomID)
+	})
 
 	got := list(roomID.String(), bob)
 	if len(got) != 2 {
@@ -157,5 +182,47 @@ func TestListParticipants(t *testing.T) {
 	}
 	if code, body := get(roomID.String(), bob); code != http.StatusForbidden {
 		t.Fatalf("expected 403 after leaving, got %d: %s", code, body)
+	}
+}
+
+// Rooms are not session-based: room responses carry no session fields, even
+// if a legacy room_sessions row is active.
+func TestRoomResponsesHaveNoSessionFields(t *testing.T) {
+	e := newRoomEnv(t)
+	ctx := context.Background()
+	roomID := createTestRoom(t, e.db, "Sessionless Room "+uuid.NewString())
+	_, token := e.newUser("Ada")
+
+	if _, err := e.db.Exec(ctx, `INSERT INTO room_sessions (room_id, status) VALUES ($1, 'focus')`, roomID); err != nil {
+		t.Fatalf("insert room session: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = e.db.Exec(context.Background(), "DELETE FROM room_participations WHERE room_id = $1", roomID)
+		_, _ = e.db.Exec(context.Background(), "DELETE FROM room_sessions WHERE room_id = $1", roomID)
+	})
+
+	for _, c := range []struct{ method, path string }{
+		{http.MethodGet, "/rooms/" + roomID.String()},
+		{http.MethodPost, "/rooms/" + roomID.String() + "/join"},
+	} {
+		code, body := e.do(c.method, c.path, token)
+		if code != http.StatusOK {
+			t.Fatalf("%s %s: expected 200, got %d: %s", c.method, c.path, code, body)
+		}
+		var raw map[string]map[string]any
+		if err := json.Unmarshal([]byte(body), &raw); err != nil {
+			t.Fatalf("decode %s: %v", body, err)
+		}
+		if _, ok := raw["active_session"]; ok {
+			t.Fatalf("%s %s: unexpected active_session in %s", c.method, c.path, body)
+		}
+		if raw["room"]["id"] != roomID.String() {
+			t.Fatalf("%s %s: expected room %s in %s", c.method, c.path, roomID, body)
+		}
+		if p, ok := raw["participation"]; ok {
+			if _, has := p["session_id"]; has {
+				t.Fatalf("%s %s: unexpected participation.session_id in %s", c.method, c.path, body)
+			}
+		}
 	}
 }
