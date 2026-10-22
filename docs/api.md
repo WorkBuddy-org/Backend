@@ -48,7 +48,7 @@ Statuses used across the API:
 | `403` | Authenticated, but not allowed (not the task owner, not in the room) |
 | `404` | Resource not found |
 | `409` | Conflict with the current state (timer already running, prompt expired, …) |
-| `429` | Rate limited (login attempts, chat messages) |
+| `429` | Rate limited (login attempts, chat messages). Always has a `Retry-After` header: whole seconds to wait. |
 | `502` | OAuth provider failed |
 | `503` | A dependency or feature is not configured/available |
 
@@ -127,8 +127,10 @@ Errors:
 - `401 invalid email or password`: unknown email, OAuth-only account or wrong
   password (deliberately indistinguishable).
 - `429 too many login attempts, try again later`: more than 5 attempts for
-  the same email within 15 minutes. The counter resets on a successful login.
-  There is no `Retry-After` header.
+  the same email within 15 minutes (the window starts at the first attempt).
+  The `Retry-After` header gives the seconds until the window resets. A
+  successful login resets the counter. If the server's Redis is unavailable,
+  attempts aren't limited (same as chat).
 - `400 invalid request body`.
 
 ### `POST /auth/refresh`
