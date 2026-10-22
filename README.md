@@ -12,6 +12,9 @@ make run             # start the API server
 
 See `.env.example` for a ready-to-copy local configuration.
 
+API docs for the frontend: [docs/api.md](docs/api.md) (REST) and
+[docs/ws-protocol.md](docs/ws-protocol.md) (WebSocket events).
+
 ## Configuration
 
 All settings come from environment variables. In development (`ENV` unset or
