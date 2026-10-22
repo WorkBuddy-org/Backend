@@ -10,7 +10,40 @@ make migrate-up      # apply migrations (seeds fixed rooms)
 make run             # start the API server
 ```
 
-See `.env.example` for required configuration.
+See `.env.example` for a ready-to-copy local configuration.
+
+## Configuration
+
+All settings come from environment variables. In development (`ENV` unset or
+`development`) a `.env` file in the working directory is loaded too.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `8080` | HTTP listen port. |
+| `ENV` | `development` | `development`, `test` or `production`; production enforces OAuth and frontend settings. |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. |
+| `DATABASE_URL` | — (required) | Postgres connection string. |
+| `REDIS_URL` | — (required) | Redis connection string. |
+| `JWT_SECRET` | — (required) | Secret that signs the API's access tokens. |
+| `JWT_ACCESS_TTL` | `15m` | Access token lifetime. |
+| `JWT_REFRESH_TTL` | `720h` | Refresh token lifetime. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URL` | empty | Google OAuth app; required in production. |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_REDIRECT_URL` | empty | GitHub OAuth app; required in production. |
+| `FRONTEND_CALLBACK_URL` | empty | Frontend URL that receives tokens after OAuth login; required in production. |
+| `WS_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to open WebSockets; empty allows any origin in development and rejects browser origins otherwise. |
+| `EXTENSION_PROMPT_TIMEOUT` | `60s` | How long a user has to answer the "need more time?" prompt before being removed from the room. |
+| `EXTENSION_MAX_COUNT` | `3` | Maximum timer extensions per task. |
+| `LIVEKIT_URL` | empty | LiveKit server URL returned to clients with a call token. |
+| `LIVEKIT_API_KEY` | empty | LiveKit API key; issuer of call tokens. |
+| `LIVEKIT_API_SECRET` | empty | LiveKit API secret that signs call tokens; never sent to clients. If any `LIVEKIT_*` is empty, `POST /rooms/{id}/call/token` returns 503. |
+
+## Reverse Proxy
+
+Browsers can't set headers on a WebSocket handshake, so clients pass the access
+token as a query parameter: `GET /rooms/{id}/ws?access_token=...`. An nginx or
+other reverse proxy in front of the API **must not log the `access_token` query
+parameter**. Log `$uri` instead of `$request_uri`/`$request`, or strip the
+parameter in a custom `log_format`. The server itself never logs it.
 
 ## Redis Key Structure
 
