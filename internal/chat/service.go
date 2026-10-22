@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"unicode/utf8"
 
@@ -31,14 +32,16 @@ type EventSink interface {
 }
 
 type Service struct {
-	repo   *Repository
-	rooms  Participation
-	events EventSink
+	repo    *Repository
+	rooms   Participation
+	events  EventSink
+	limiter RateLimiter
 }
 
-// NewService builds the chat service. A nil events drops broadcasts.
-func NewService(repo *Repository, rooms Participation, events EventSink) *Service {
-	return &Service{repo: repo, rooms: rooms, events: events}
+// NewService builds the chat service. A nil events drops broadcasts; a nil
+// limiter disables rate limiting.
+func NewService(repo *Repository, rooms Participation, events EventSink, limiter RateLimiter) *Service {
+	return &Service{repo: repo, rooms: rooms, events: events, limiter: limiter}
 }
 
 // Send stores a message from a user who is currently in the room and
@@ -52,6 +55,9 @@ func (s *Service) Send(ctx context.Context, roomID, userID uuid.UUID, text strin
 		return nil, ErrTextTooLong
 	}
 	if err := s.requireParticipant(ctx, roomID, userID); err != nil {
+		return nil, err
+	}
+	if err := s.checkRate(ctx, userID); err != nil {
 		return nil, err
 	}
 
@@ -93,6 +99,23 @@ func (s *Service) List(ctx context.Context, roomID, userID uuid.UUID, before *uu
 		page.NextCursor = &next
 	}
 	return page, nil
+}
+
+// checkRate counts a send against the user's limit. If the limiter fails, the
+// message is let through: chat stays usable while Redis is down.
+func (s *Service) checkRate(ctx context.Context, userID uuid.UUID) error {
+	if s.limiter == nil {
+		return nil
+	}
+	allowed, retryAfter, err := s.limiter.Allow(ctx, userID)
+	if err != nil {
+		slog.Warn("chat rate limiter unavailable, allowing message", "user_id", userID, "error", err)
+		return nil
+	}
+	if !allowed {
+		return &RateLimitedError{RetryAfter: retryAfter}
+	}
+	return nil
 }
 
 func (s *Service) requireParticipant(ctx context.Context, roomID, userID uuid.UUID) error {

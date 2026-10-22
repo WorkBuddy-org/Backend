@@ -43,6 +43,11 @@ type Config struct {
 	// ExtensionMaxCount caps extensions per task.
 	ExtensionMaxCount int
 
+	// ChatRateLimit is how many chat messages a user may send per
+	// ChatRateWindow; 0 disables the limit.
+	ChatRateLimit  int
+	ChatRateWindow time.Duration
+
 	// LiveKit settings for audio/video calls. When any is empty, call token
 	// requests answer 503.
 	LiveKitURL       string
@@ -102,6 +107,16 @@ func Load() (*Config, error) {
 	cfg.ExtensionMaxCount, err = strconv.Atoi(getEnv("EXTENSION_MAX_COUNT", "3"))
 	if err != nil || cfg.ExtensionMaxCount < 0 {
 		return nil, fmt.Errorf("parse EXTENSION_MAX_COUNT: must be a non-negative integer")
+	}
+
+	cfg.ChatRateLimit, err = strconv.Atoi(getEnv("CHAT_RATE_LIMIT", "10"))
+	if err != nil || cfg.ChatRateLimit < 0 {
+		return nil, fmt.Errorf("parse CHAT_RATE_LIMIT: must be a non-negative integer")
+	}
+
+	cfg.ChatRateWindow, err = time.ParseDuration(getEnv("CHAT_RATE_WINDOW", "10s"))
+	if err != nil || cfg.ChatRateWindow < time.Millisecond {
+		return nil, fmt.Errorf("parse CHAT_RATE_WINDOW: must be a positive duration such as 10s")
 	}
 
 	if cfg.DatabaseURL == "" {

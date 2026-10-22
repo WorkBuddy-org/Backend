@@ -123,6 +123,11 @@ func main() {
 		slog.Warn("LIVEKIT_URL, LIVEKIT_API_KEY or LIVEKIT_API_SECRET is empty: call token requests will return 503")
 	}
 
+	var chatLimiter chat.RateLimiter
+	if cfg.ChatRateLimit > 0 {
+		chatLimiter = chat.NewRedisRateLimiter(redisClient, cfg.ChatRateLimit, cfg.ChatRateWindow, "")
+	}
+
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:             db,
 		Redis:          redisClient,
@@ -132,7 +137,7 @@ func main() {
 		InviteHandler:  invite.NewHandler(inviteService),
 		TaskHandler:    task.NewHandler(taskService),
 		ProfileHandler: profile.NewHandler(profileService),
-		ChatHandler:    chat.NewHandler(chat.NewService(chat.NewRepository(db), roomService, wsHub)),
+		ChatHandler:    chat.NewHandler(chat.NewService(chat.NewRepository(db), roomService, wsHub, chatLimiter)),
 		WSHandler:      wsHandler,
 		CallHandler:    call.NewHandler(callService),
 	})
