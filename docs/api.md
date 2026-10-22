@@ -48,7 +48,7 @@ Statuses used across the API:
 | `403` | Authenticated, but not allowed (not the task owner, not in the room) |
 | `404` | Resource not found |
 | `409` | Conflict with the current state (timer already running, prompt expired, …) |
-| `429` | Rate limited (login attempts) |
+| `429` | Rate limited (login attempts, chat messages) |
 | `502` | OAuth provider failed |
 | `503` | A dependency or feature is not configured/available |
 
@@ -574,7 +574,11 @@ Errors: `400 invalid room id`, `400 text is required` (empty or only
 whitespace), `400 text must be at most 2000 characters`,
 `400 invalid request body`, `401`,
 `403 join the room before using its chat` (not in the room, or the room
-doesn't exist).
+doesn't exist), `429 too many messages, slow down`: more than
+`CHAT_RATE_LIMIT` (default 10) messages from this user within
+`CHAT_RATE_WINDOW` (default 10 s), across all rooms. The `Retry-After`
+header gives the seconds to wait. Rejected messages aren't stored or
+broadcast. Invalid messages get their `400` first and don't count.
 
 ### `GET /rooms/{id}/messages`
 

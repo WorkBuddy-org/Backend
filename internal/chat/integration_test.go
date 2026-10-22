@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/workbuddy/backend/internal/auth"
 	"github.com/workbuddy/backend/internal/chat"
 	"github.com/workbuddy/backend/internal/config"
@@ -324,6 +325,13 @@ type chatEnv struct {
 
 func newChatEnv(t *testing.T) *chatEnv {
 	t.Helper()
+	return newChatEnvWithLimiter(t, nil)
+}
+
+// newChatEnvWithLimiter builds the env with the limiter newLimiter returns
+// for the test Redis client; a nil newLimiter disables rate limiting.
+func newChatEnvWithLimiter(t *testing.T, newLimiter func(*goredis.Client) chat.RateLimiter) *chatEnv {
+	t.Helper()
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -351,7 +359,11 @@ func newChatEnv(t *testing.T) *chatEnv {
 	tokenManager := auth.NewTokenManager(cfg.JWTSecret, cfg.JWTAccessTTL)
 	roomService := room.NewService(room.NewRepository(db))
 	events := &eventRecorder{}
-	chatService := chat.NewService(chat.NewRepository(db), roomService, events)
+	var limiter chat.RateLimiter
+	if newLimiter != nil {
+		limiter = newLimiter(redisClient)
+	}
+	chatService := chat.NewService(chat.NewRepository(db), roomService, events, limiter)
 
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:          db,

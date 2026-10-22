@@ -374,6 +374,11 @@ has no participants, so it also gets 403.
 - `201` with the stored message:
   `{"id", "room_id", "user_id", "user_name", "text", "created_at"}`
   (`created_at` is RFC 3339 with the database's precision).
+- Rate limit: by default 10 messages per user per 10 seconds, counted across
+  all rooms (`CHAT_RATE_LIMIT` / `CHAT_RATE_WINDOW`). Over the limit →
+  `429 {"error":"too many messages, slow down"}` with a `Retry-After` header
+  (whole seconds until the window resets). The message isn't stored or
+  broadcast. Invalid messages get their `400` first and don't count.
 
 **History:** `GET /rooms/{room_id}/messages?before={message_id}&limit={n}`.
 

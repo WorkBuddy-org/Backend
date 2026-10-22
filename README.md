@@ -36,6 +36,8 @@ All settings come from environment variables. In development (`ENV` unset or
 | `WS_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to open WebSockets; empty allows any origin in development and rejects browser origins otherwise. |
 | `EXTENSION_PROMPT_TIMEOUT` | `60s` | How long a user has to answer the "need more time?" prompt before being removed from the room. |
 | `EXTENSION_MAX_COUNT` | `3` | Maximum timer extensions per task. |
+| `CHAT_RATE_LIMIT` | `10` | Chat messages a user may send per `CHAT_RATE_WINDOW`, across all rooms; `0` disables the limit. |
+| `CHAT_RATE_WINDOW` | `10s` | Length of the chat rate-limit window (fixed window, kept in Redis). |
 | `LIVEKIT_URL` | empty | LiveKit server URL returned to clients with a call token. |
 | `LIVEKIT_API_KEY` | empty | LiveKit API key; issuer of call tokens. |
 | `LIVEKIT_API_SECRET` | empty | LiveKit API secret that signs call tokens; never sent to clients. If any `LIVEKIT_*` is empty, `POST /rooms/{id}/call/token` returns 503. |

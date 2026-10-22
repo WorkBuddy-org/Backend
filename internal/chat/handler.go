@@ -140,7 +140,11 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 // writeError maps chat errors to statuses; anything unknown is a 500 without
 // internal details.
 func writeError(w http.ResponseWriter, err error) {
+	var limited *RateLimitedError
 	switch {
+	case errors.As(err, &limited):
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(limited.RetryAfter)))
+		httpx.Error(w, http.StatusTooManyRequests, err.Error())
 	case errors.Is(err, ErrTextRequired), errors.Is(err, ErrTextTooLong), errors.Is(err, ErrInvalidCursor):
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrNotInRoom):
@@ -149,6 +153,12 @@ func writeError(w http.ResponseWriter, err error) {
 		slog.Error("chat request failed", "error", err)
 		httpx.Error(w, http.StatusInternalServerError, "internal error")
 	}
+}
+
+// retryAfterSeconds rounds up to whole seconds, at least 1, as Retry-After
+// takes an integer.
+func retryAfterSeconds(d time.Duration) int {
+	return max(int((d+time.Second-1)/time.Second), 1)
 }
 
 func decodeJSON(r *http.Request, dst any) error {
