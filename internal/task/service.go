@@ -85,6 +85,10 @@ func (s *Service) Create(ctx context.Context, roomID, userID uuid.UUID, text str
 }
 
 func (s *Service) Update(ctx context.Context, taskID, userID uuid.UUID, update Update) (*Task, error) {
+	if update.Text == nil && update.Completed == nil {
+		return nil, ErrNoFields
+	}
+
 	existing, err := s.repo.FindByID(ctx, taskID)
 	if err != nil {
 		return nil, err

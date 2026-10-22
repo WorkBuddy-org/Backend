@@ -453,16 +453,17 @@ Edit or complete your own task. **Auth:** required (owner only).
 | `text` | string | Optional. Trimmed, must not be empty. |
 | `completed` | bool | Optional. `true` completes (sets `completed_at` to now), `false` un-completes. |
 
-Absent fields are unchanged. An empty `{}` is accepted and returns the task.
+Absent (or `null`) fields are unchanged, but at least one must be present:
+`{}` is a `400 no fields to update`, the same as `PATCH /profile`.
 Completing a task whose timer is `running` or `prompting` ends the timer
 (`timer_status: "ended"`), and the room receives `timer_ended` with reason
 `completed`.
 
 `200 OK` → task object.
 
-Errors: `400 invalid task id`, `400 text is required`,
-`400 invalid request body`, `401`, `403 not the owner of this task`,
-`404 task not found`.
+Errors: `400 invalid task id`, `400 no fields to update`,
+`400 text is required`, `400 invalid request body`, `401`,
+`403 not the owner of this task`, `404 task not found`.
 
 There is no endpoint to delete a task.
 

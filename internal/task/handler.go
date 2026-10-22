@@ -144,7 +144,7 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		case errors.Is(err, ErrForbidden):
 			status = http.StatusForbidden
-		case errors.Is(err, ErrTextRequired):
+		case errors.Is(err, ErrTextRequired), errors.Is(err, ErrNoFields):
 			status = http.StatusBadRequest
 		}
 		httpx.Error(w, status, err.Error())
