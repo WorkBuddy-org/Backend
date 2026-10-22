@@ -27,6 +27,7 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *auth.Middleware) 
 		r.Get("/rooms/{id}", h.get)
 		r.Post("/rooms/{id}/join", h.join)
 		r.Post("/rooms/{id}/leave", h.leave)
+		r.Get("/rooms/{id}/participants", h.participants)
 	})
 }
 
@@ -54,6 +55,12 @@ type participationDTO struct {
 	JoinedAt   time.Time  `json:"joined_at"`
 	LeftAt     *time.Time `json:"left_at,omitempty"`
 	LeftReason *string    `json:"left_reason,omitempty"`
+}
+
+type participantDTO struct {
+	UserID   uuid.UUID `json:"user_id"`
+	Name     string    `json:"name"`
+	JoinedAt time.Time `json:"joined_at"`
 }
 
 type roomDetailResponse struct {
@@ -199,4 +206,34 @@ func (h *Handler) leave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) participants(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		return
+	}
+
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		return
+	}
+
+	participants, err := h.service.ListParticipants(r.Context(), id, userID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrNotMember) {
+			status = http.StatusForbidden
+		}
+		httpx.Error(w, status, err.Error())
+		return
+	}
+
+	dtos := make([]participantDTO, len(participants))
+	for i, p := range participants {
+		dtos[i] = participantDTO(p)
+	}
+	httpx.JSON(w, http.StatusOK, dtos)
 }

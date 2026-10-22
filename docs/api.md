@@ -330,11 +330,28 @@ a `user_left` event.
 
 Errors: `400 invalid room id`, `401`, `404 not currently in this room`.
 
-### Participants
+### `GET /rooms/{id}/participants`
 
-There is no REST endpoint that lists a room's participants. The live list
-comes over the room WebSocket: `presence_snapshot` on connect, then
-`user_joined` / `user_left` (see [ws-protocol.md](ws-protocol.md)).
+Who is in the room right now (users with an open participation: joined and not
+left or removed). **Auth:** required, and the caller must be in the room too.
+
+`200 OK` → array, earliest joiner first. It always includes the caller:
+
+```json
+[
+  { "user_id": "6f1c…", "name": "Ada", "joined_at": "2026-10-22T14:03:11.482913Z" },
+  { "user_id": "8a2d…", "name": "Linus", "joined_at": "2026-10-22T14:05:40.019311Z" }
+]
+```
+
+- There is no online status: a participant may have no open WebSocket. For
+  "online now", use WS presence (`presence_snapshot`, `user_joined`,
+  `user_left`; see [ws-protocol.md](ws-protocol.md)).
+- No avatar field yet: users have no avatar URL.
+
+Errors: `400 invalid room id`, `401`,
+`403 join the room to see its participants` (caller not in the room, or the
+room doesn't exist).
 
 ## Invites
 
@@ -681,6 +698,7 @@ and the failing check set to `"unavailable"`.
 | GET | `/rooms/{id}` | Bearer |
 | POST | `/rooms/{id}/join` | Bearer |
 | POST | `/rooms/{id}/leave` | Bearer |
+| GET | `/rooms/{id}/participants` | Bearer + in room |
 | GET | `/rooms/{id}/ws` | `?access_token=` |
 | POST | `/rooms/{id}/messages` | Bearer + in room |
 | GET | `/rooms/{id}/messages` | Bearer + in room |
