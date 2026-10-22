@@ -225,10 +225,17 @@ type timerEnv struct {
 	router    http.Handler
 	clock     *fakeClock
 	events    *eventRecorder
+	prefix    string
 	timersKey string
+	ext       task.ExtensionConfig
 }
 
 func newTimerEnv(t *testing.T) *timerEnv {
+	t.Helper()
+	return newTimerEnvWith(t, task.ExtensionConfig{})
+}
+
+func newTimerEnvWith(t *testing.T, ext task.ExtensionConfig) *timerEnv {
 	t.Helper()
 
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -255,16 +262,17 @@ func newTimerEnv(t *testing.T) *timerEnv {
 	t.Cleanup(func() { _ = redisClient.Close() })
 
 	prefix := "test:" + uuid.NewString() + ":"
-	t.Cleanup(func() { _ = redisClient.Del(context.Background(), prefix+"timers:due").Err() })
+	t.Cleanup(func() { _ = redisClient.Del(context.Background(), prefix+"timers:due", prefix+"prompts:due").Err() })
 
 	tokenManager := auth.NewTokenManager(cfg.JWTSecret, cfg.JWTAccessTTL)
 	roomService := room.NewService(room.NewRepository(db))
 	clock := &fakeClock{now: time.Now()}
 	events := &eventRecorder{}
 	taskService := task.NewService(task.NewRepository(db), roomService, task.TimerDeps{
-		Index:  task.NewTimerIndex(redisClient, prefix),
-		Events: events,
-		Clock:  clock.Now,
+		Index:     task.NewTimerIndex(redisClient, prefix),
+		Events:    events,
+		Clock:     clock.Now,
+		Extension: ext,
 	})
 
 	router := httpapi.NewRouter(httpapi.RouterDeps{
@@ -277,8 +285,19 @@ func newTimerEnv(t *testing.T) *timerEnv {
 	return &timerEnv{
 		t: t, db: db, redis: redisClient, tokens: tokenManager, rooms: roomService,
 		service: taskService, router: router, clock: clock, events: events,
-		timersKey: prefix + "timers:due",
+		prefix: prefix, timersKey: prefix + "timers:due", ext: ext,
 	}
+}
+
+// newService returns another service over the same database and index with
+// its own clock, standing in for a second server instance.
+func (e *timerEnv) newService(clock func() time.Time) *task.Service {
+	return task.NewService(task.NewRepository(e.db), e.rooms, task.TimerDeps{
+		Index:     task.NewTimerIndex(e.redis, e.prefix),
+		Events:    e.events,
+		Clock:     clock,
+		Extension: e.ext,
+	})
 }
 
 func (e *timerEnv) createUser() (uuid.UUID, string) {

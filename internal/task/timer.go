@@ -24,18 +24,9 @@ const cleanupTimeout = 5 * time.Second
 
 // ExpiryHandler decides what happens when a task's timer runs out. It is
 // called exactly once per expiry, after the task has moved to 'prompting'.
-// The extension flow plugs in here.
+// The default is the extension prompt (promptExtension).
 type ExpiryHandler interface {
 	TimerExpired(ctx context.Context, t *Task)
-}
-
-// broadcastExpiry is the default ExpiryHandler: it only tells the room.
-type broadcastExpiry struct {
-	s *Service
-}
-
-func (b broadcastExpiry) TimerExpired(_ context.Context, t *Task) {
-	b.s.broadcastTimerEnded(t, ws.TimerEndedExpired)
 }
 
 // StartTimer starts the task's timer for the given number of minutes. Only
@@ -98,15 +89,19 @@ func (s *Service) StartTimer(ctx context.Context, taskID, userID uuid.UUID, minu
 func (s *Service) stopTimer(ctx context.Context, t *Task) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
-	if err := s.index.timers.unschedule(cleanupCtx, t.ID); err != nil {
-		// Harmless: the scheduler's conditional expire ignores ended timers.
-		slog.Error("failed to unschedule stopped timer", "task_id", t.ID, "error", err)
+	for _, set := range []dueSet{s.index.timers, s.index.prompts} {
+		if err := set.unschedule(cleanupCtx, t.ID); err != nil {
+			// Harmless: the scheduler's conditional updates ignore ended timers.
+			slog.Error("failed to unschedule stopped timer", "task_id", t.ID, "error", err)
+		}
 	}
 	s.broadcastTimerEnded(t, ws.TimerEndedCompleted)
 }
 
-// RecoverTimers rebuilds the Redis index from Postgres. Timers that ended
-// while the server was down are due immediately and fire on the next tick.
+// RecoverTimers rebuilds the Redis index from Postgres. Timers and prompts
+// whose time passed while the server was down are due immediately and are
+// handled on the next tick. A prompting timer without a deadline (the server
+// stopped between expiry and prompting) is prompted again.
 func (s *Service) RecoverTimers(ctx context.Context) (int, error) {
 	active, err := s.repo.ListActiveTimers(ctx)
 	if err != nil {
@@ -115,25 +110,47 @@ func (s *Service) RecoverTimers(ctx context.Context) (int, error) {
 	if err := s.index.rebuild(ctx, active); err != nil {
 		return 0, err
 	}
+	for i := range active {
+		if t := &active[i]; t.TimerStatus == TimerPrompting && t.PromptDeadlineAt == nil {
+			s.onExpire.TimerExpired(ctx, t)
+		}
+	}
 	return len(active), nil
 }
 
-// FireDue expires every timer whose end has passed. Each entry is claimed
-// first, so with several pollers only one acts on it.
+// FireDue expires every timer whose end has passed and ends every prompt
+// whose deadline has passed. Each entry is claimed first, so only one actor
+// (another poller, or the user answering the prompt) handles it.
 func (s *Service) FireDue(ctx context.Context) error {
 	now := s.now()
-	ids, err := s.index.timers.due(ctx, now)
+
+	timers, err := s.index.timers.due(ctx, now)
 	if err != nil {
 		return err
 	}
-
-	for _, id := range ids {
+	for _, id := range timers {
 		claimed, err := s.index.timers.claim(ctx, id, now)
 		if err != nil {
 			return err
 		}
 		if claimed {
 			s.expireTimer(ctx, id, now)
+		}
+	}
+
+	prompts, err := s.index.prompts.due(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, id := range prompts {
+		claimed, err := s.index.prompts.claim(ctx, id, now)
+		if err != nil {
+			return err
+		}
+		if claimed {
+			if _, err := s.endPrompt(ctx, id, &now); err != nil {
+				slog.Error("failed to end unanswered extension prompt", "task_id", id, "error", err)
+			}
 		}
 	}
 	return nil

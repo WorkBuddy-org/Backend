@@ -168,6 +168,54 @@ func (r *Repository) ExpireTimer(ctx context.Context, id uuid.UUID, now time.Tim
 	return scanTask(r.db.QueryRow(ctx, query, id, now))
 }
 
+// SetPromptDeadline records when the extension prompt of a prompting timer
+// runs out.
+func (r *Repository) SetPromptDeadline(ctx context.Context, id uuid.UUID, deadline time.Time) (*Task, error) {
+	const query = `
+		UPDATE tasks
+		SET prompt_deadline_at = $2, updated_at = now()
+		WHERE id = $1 AND timer_status = 'prompting'
+		RETURNING ` + taskColumns
+
+	return scanTask(r.db.QueryRow(ctx, query, id, deadline))
+}
+
+// ExtendTimer puts a prompting timer back to running until endsAt, counting
+// the extension. It returns ErrTaskNotFound when the timer is not prompting,
+// the prompt deadline is not after now, or maxCount is reached.
+func (r *Repository) ExtendTimer(ctx context.Context, id uuid.UUID, minutes int, now, endsAt time.Time, maxCount int) (*Task, error) {
+	const query = `
+		UPDATE tasks
+		SET timer_status = 'running',
+			timer_ends_at = $4,
+			prompt_deadline_at = NULL,
+			extended_count = extended_count + 1,
+			extra_minutes_used = extra_minutes_used + $2,
+			updated_at = now()
+		WHERE id = $1
+			AND timer_status = 'prompting'
+			AND (prompt_deadline_at IS NULL OR prompt_deadline_at > $3)
+			AND extended_count < $5
+		RETURNING ` + taskColumns
+
+	return scanTask(r.db.QueryRow(ctx, query, id, minutes, now, endsAt, maxCount))
+}
+
+// EndPrompt ends a prompting timer (the user declined or did not answer).
+// With dueBy set, it only acts if the prompt deadline is at or before dueBy.
+// It returns ErrTaskNotFound when there is nothing to end.
+func (r *Repository) EndPrompt(ctx context.Context, id uuid.UUID, dueBy *time.Time) (*Task, error) {
+	const query = `
+		UPDATE tasks
+		SET timer_status = 'ended', prompt_deadline_at = NULL, updated_at = now()
+		WHERE id = $1
+			AND timer_status = 'prompting'
+			AND ($2::timestamptz IS NULL OR prompt_deadline_at IS NULL OR prompt_deadline_at <= $2)
+		RETURNING ` + taskColumns
+
+	return scanTask(r.db.QueryRow(ctx, query, id, dueBy))
+}
+
 // ListActiveTimers returns every task whose timer is running or prompting.
 func (r *Repository) ListActiveTimers(ctx context.Context) ([]Task, error) {
 	const query = `

@@ -29,6 +29,8 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *auth.Middleware) 
 		r.Post("/rooms/{id}/tasks", h.create)
 		r.Patch("/tasks/{id}", h.update)
 		r.Post("/tasks/{id}/start", h.startTimer)
+		r.Post("/tasks/{id}/extend", h.extendTimer)
+		r.Post("/tasks/{id}/no-extend", h.declineExtension)
 		r.Get("/tasks/me", h.listMine)
 	})
 }
@@ -184,17 +186,73 @@ func (h *Handler) startTimer(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, toTaskDTO(t))
 }
 
+type extendTimerRequest struct {
+	Minutes int `json:"minutes"`
+}
+
+func (h *Handler) extendTimer(w http.ResponseWriter, r *http.Request) {
+	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid task id")
+		return
+	}
+
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		return
+	}
+
+	var req extendTimerRequest
+	if err := decodeJSON(r, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	t, err := h.service.ExtendTimer(r.Context(), taskID, userID, req.Minutes)
+	if err != nil {
+		writeTimerError(w, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, toTaskDTO(t))
+}
+
+// declineExtension takes no body.
+func (h *Handler) declineExtension(w http.ResponseWriter, r *http.Request) {
+	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid task id")
+		return
+	}
+
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		return
+	}
+
+	t, err := h.service.DeclineExtension(r.Context(), taskID, userID)
+	if err != nil {
+		writeTimerError(w, err)
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, toTaskDTO(t))
+}
+
 // writeTimerError maps timer errors to statuses; anything unknown is a 500
 // without internal details.
 func writeTimerError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrInvalidDuration):
+	case errors.Is(err, ErrInvalidDuration), errors.Is(err, ErrInvalidExtension):
 		httpx.Error(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrTaskNotFound):
 		httpx.Error(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrForbidden):
 		httpx.Error(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, ErrTaskCompleted), errors.Is(err, ErrNotInRoom), errors.Is(err, ErrTimerActive):
+	case errors.Is(err, ErrTaskCompleted), errors.Is(err, ErrNotInRoom), errors.Is(err, ErrTimerActive),
+		errors.Is(err, ErrNotPrompting), errors.Is(err, ErrPromptExpired), errors.Is(err, ErrExtensionLimit):
 		httpx.Error(w, http.StatusConflict, err.Error())
 	default:
 		slog.Error("task timer request failed", "error", err)

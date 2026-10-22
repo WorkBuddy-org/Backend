@@ -305,6 +305,58 @@ func TestWebSocketRESTLeaveClosesSocketsAndBroadcastsOnce(t *testing.T) {
 	}
 }
 
+func TestWebSocketKickSendsKickedThenCloses(t *testing.T) {
+	e := newTestEnv(t, ws.Config{})
+	roomID := e.createRoom()
+	observer, observerToken := e.createUser("Observer")
+	alice, aliceToken := e.createUser("Alice")
+	marker, markerToken := e.createUser("Marker")
+	for _, token := range []string{observerToken, aliceToken, markerToken} {
+		e.joinREST(roomID, token)
+	}
+
+	connO := e.dial(roomID, observerToken)
+	expectType(t, readEvent(t, connO), ws.TypePresenceSnapshot)
+	tab1 := e.dial(roomID, aliceToken)
+	expectType(t, readEvent(t, tab1), ws.TypePresenceSnapshot)
+	expectJoined(t, readEvent(t, connO), alice.ID)
+	tab2 := e.dial(roomID, aliceToken)
+	expectType(t, readEvent(t, tab2), ws.TypePresenceSnapshot)
+
+	if err := e.rooms.Kick(context.Background(), roomID, alice.ID); err != nil {
+		t.Fatalf("kick: %v", err)
+	}
+
+	for i, conn := range []*websocket.Conn{tab1, tab2} {
+		ev := readEvent(t, conn)
+		expectType(t, ev, ws.TypeKicked)
+		var data ws.KickedData
+		decodeData(t, ev, &data)
+		if data.Reason != ws.LeftReasonKicked {
+			t.Fatalf("tab%d: expected kicked reason %q, got %+v", i+1, ws.LeftReasonKicked, data)
+		}
+		if code := expectClosed(t, conn); code != ws.StatusRemovedFromRoom {
+			t.Fatalf("tab%d: expected close %d, got %d", i+1, ws.StatusRemovedFromRoom, code)
+		}
+	}
+
+	// The room gets exactly one user_left; the marker's join comes next.
+	expectUserLeftReason(t, readEvent(t, connO), alice.ID, ws.LeftReasonKicked)
+	connM := e.dial(roomID, markerToken)
+	expectType(t, readEvent(t, connM), ws.TypePresenceSnapshot)
+	expectJoined(t, readEvent(t, connO), marker.ID)
+
+	if got := e.presence(roomID); !equalIDs(got, observer.ID, marker.ID) {
+		t.Fatalf("expected alice removed from presence, got %v", got)
+	}
+
+	// A kicked user cannot reconnect without joining again.
+	_, resp, err := e.dialPath("/rooms/"+roomID.String()+"/ws", aliceToken, "")
+	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 after kick, got %+v (err %v)", resp, err)
+	}
+}
+
 func TestWebSocketPingPongIgnoresOtherMessagesAndOutlivesServerTimeouts(t *testing.T) {
 	e := newTestEnv(t, ws.Config{})
 	roomID := e.createRoom()
@@ -394,6 +446,7 @@ type testEnv struct {
 	redis    *goredis.Client
 	tokens   *auth.TokenManager
 	hub      *ws.Hub
+	rooms    *room.Service
 	server   *httptest.Server
 	presence func(roomID uuid.UUID) []string
 }
@@ -458,7 +511,7 @@ func newTestEnv(t *testing.T, wsCfg ws.Config) *testEnv {
 		server.Close()
 	})
 
-	e := &testEnv{t: t, db: db, redis: redisClient, tokens: tokenManager, hub: hub, server: server}
+	e := &testEnv{t: t, db: db, redis: redisClient, tokens: tokenManager, hub: hub, rooms: roomService, server: server}
 	e.presence = func(roomID uuid.UUID) []string {
 		members, err := redisClient.SMembers(context.Background(), "room:"+roomID.String()+":presence").Result()
 		if err != nil {

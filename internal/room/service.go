@@ -114,6 +114,25 @@ func (s *Service) Leave(ctx context.Context, roomID, userID uuid.UUID) error {
 	return nil
 }
 
+// Kick closes the user's open participation in the room with left_reason
+// 'kicked' and notifies the listener. It returns ErrNotInRoom if the user had
+// already left.
+func (s *Service) Kick(ctx context.Context, roomID, userID uuid.UUID) error {
+	existing, err := s.repo.FindOpenParticipation(ctx, userID, roomID)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return ErrNotInRoom
+	}
+
+	if err := s.repo.CloseParticipation(ctx, existing.ID, LeftReasonKicked); err != nil {
+		return err
+	}
+	s.notifyLeft(roomID, userID, LeftReasonKicked)
+	return nil
+}
+
 func (s *Service) notifyLeft(roomID, userID uuid.UUID, reason string) {
 	if s.listener != nil {
 		s.listener.UserLeft(roomID, userID, reason)

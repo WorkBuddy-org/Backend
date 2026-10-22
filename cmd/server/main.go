@@ -96,6 +96,10 @@ func main() {
 	taskService := task.NewService(task.NewRepository(db), roomService, task.TimerDeps{
 		Index:  task.NewTimerIndex(redisClient, ""),
 		Events: wsHub,
+		Extension: task.ExtensionConfig{
+			PromptTimeout: cfg.ExtensionPromptTimeout,
+			MaxCount:      cfg.ExtensionMaxCount,
+		},
 	})
 
 	// The scheduler rebuilds its Redis index from Postgres before polling, so

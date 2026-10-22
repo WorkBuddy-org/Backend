@@ -24,8 +24,11 @@ type TimerDeps struct {
 	Events EventSink
 	// Clock defaults to time.Now. Tests inject a fake one.
 	Clock func() time.Time
-	// OnExpire defaults to broadcasting timer_ended.
+	// OnExpire defaults to the extension prompt.
 	OnExpire ExpiryHandler
+	// Extension left entirely zero defaults to DefaultExtensionPromptTimeout
+	// and DefaultExtensionMaxCount.
+	Extension ExtensionConfig
 }
 
 type Service struct {
@@ -35,6 +38,7 @@ type Service struct {
 	events   EventSink
 	clock    func() time.Time
 	onExpire ExpiryHandler
+	ext      ExtensionConfig
 }
 
 func NewService(repo *Repository, rooms *room.Service, timers TimerDeps) *Service {
@@ -45,12 +49,16 @@ func NewService(repo *Repository, rooms *room.Service, timers TimerDeps) *Servic
 		events:   timers.Events,
 		clock:    timers.Clock,
 		onExpire: timers.OnExpire,
+		ext:      timers.Extension,
 	}
 	if s.clock == nil {
 		s.clock = time.Now
 	}
 	if s.onExpire == nil {
-		s.onExpire = broadcastExpiry{s}
+		s.onExpire = promptExtension{s}
+	}
+	if s.ext == (ExtensionConfig{}) {
+		s.ext = ExtensionConfig{PromptTimeout: DefaultExtensionPromptTimeout, MaxCount: DefaultExtensionMaxCount}
 	}
 	return s
 }
