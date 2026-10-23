@@ -181,8 +181,9 @@ the user joins again via REST.
 |---|---|---|
 | `disconnect` | live | The user's last socket to the room closed (any cause). |
 | `left_voluntarily` | live | Left via `POST /rooms/{id}/leave`. |
-| `completed_no_extension` | planned | Reserved; not emitted today (declining an extension uses `kicked`). |
-| `kicked` | live | Removed by the server: declined or ignored the task extension prompt. |
+| `completed_no_extension` | planned | Reserved; not emitted today (declining an extension uses `kicked_no_extension`). |
+| `kicked_no_extension` | live | Removed by the server: declined or ignored the task extension prompt. |
+| `kicked` | reserved | Any other removal by the server (e.g. a future admin kick); not emitted today. |
 
 (Values other than `disconnect` match `room_participations.left_reason`.)
 
@@ -318,18 +319,19 @@ before `deadline`:
 
 ### `kicked` — live, **targeted** (only that user's sockets in this room)
 
-The user was removed from the room (they declined or did not answer the
-extension prompt). Right after this event the server closes those sockets
-with code `4001`, the user's participation is closed with
-`left_reason: "kicked"`, and the rest of the room receives `user_left` with
-`reason: "kicked"`.
+The user was removed from the room. Right after this event the server closes
+those sockets with code `4001`, the user's participation is closed with
+`left_reason` equal to `data.reason`, and the rest of the room receives
+`user_left` with the same `reason`. `data.reason` is `kicked_no_extension`
+when they declined or did not answer the extension prompt (the only case
+today), or `kicked` for any other server-side removal. Treat both the same.
 
 ```json
 {
   "type": "kicked",
   "room_id": "3f2b8c1e-6a4d-4d5e-9b1a-2c7e8f9a0b1c",
   "ts": "2026-10-20T13:26:00.050Z",
-  "data": { "reason": "kicked" }
+  "data": { "reason": "kicked_no_extension" }
 }
 ```
 

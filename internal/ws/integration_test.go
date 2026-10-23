@@ -306,6 +306,17 @@ func TestWebSocketRESTLeaveClosesSocketsAndBroadcastsOnce(t *testing.T) {
 }
 
 func TestWebSocketKickSendsKickedThenCloses(t *testing.T) {
+	testKickSendsKickedThenCloses(t, (*room.Service).Kick, ws.LeftReasonKicked)
+}
+
+// The extension-prompt kick records a distinct reason but closes sockets and
+// clears presence exactly like any other kick.
+func TestWebSocketKickNoExtensionSendsKickedThenCloses(t *testing.T) {
+	testKickSendsKickedThenCloses(t, (*room.Service).KickNoExtension, ws.LeftReasonKickedNoExtension)
+}
+
+func testKickSendsKickedThenCloses(t *testing.T, kick func(*room.Service, context.Context, uuid.UUID, uuid.UUID) error, reason string) {
+	t.Helper()
 	e := newTestEnv(t, ws.Config{})
 	roomID := e.createRoom()
 	observer, observerToken := e.createUser("Observer")
@@ -323,7 +334,7 @@ func TestWebSocketKickSendsKickedThenCloses(t *testing.T) {
 	tab2 := e.dial(roomID, aliceToken)
 	expectType(t, readEvent(t, tab2), ws.TypePresenceSnapshot)
 
-	if err := e.rooms.Kick(context.Background(), roomID, alice.ID); err != nil {
+	if err := kick(e.rooms, context.Background(), roomID, alice.ID); err != nil {
 		t.Fatalf("kick: %v", err)
 	}
 
@@ -332,8 +343,8 @@ func TestWebSocketKickSendsKickedThenCloses(t *testing.T) {
 		expectType(t, ev, ws.TypeKicked)
 		var data ws.KickedData
 		decodeData(t, ev, &data)
-		if data.Reason != ws.LeftReasonKicked {
-			t.Fatalf("tab%d: expected kicked reason %q, got %+v", i+1, ws.LeftReasonKicked, data)
+		if data.Reason != reason {
+			t.Fatalf("tab%d: expected kicked reason %q, got %+v", i+1, reason, data)
 		}
 		if code := expectClosed(t, conn); code != ws.StatusRemovedFromRoom {
 			t.Fatalf("tab%d: expected close %d, got %d", i+1, ws.StatusRemovedFromRoom, code)
@@ -341,7 +352,7 @@ func TestWebSocketKickSendsKickedThenCloses(t *testing.T) {
 	}
 
 	// The room gets exactly one user_left; the marker's join comes next.
-	expectUserLeftReason(t, readEvent(t, connO), alice.ID, ws.LeftReasonKicked)
+	expectUserLeftReason(t, readEvent(t, connO), alice.ID, reason)
 	connM := e.dial(roomID, markerToken)
 	expectType(t, readEvent(t, connM), ws.TypePresenceSnapshot)
 	expectJoined(t, readEvent(t, connO), marker.ID)
