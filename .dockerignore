@@ -1,0 +1,14 @@
+# Keep secrets and local clutter out of the build context.
+.env
+.env.*
+!.env.example
+!.env.prod.example
+.git
+.github
+.vscode
+.idea
+bin
+dist
+*.test
+*.out
+coverage.*
