@@ -1,0 +1,24 @@
+# Caddy gets and renews a TLS certificate for DOMAIN automatically (the DNS
+# A/AAAA record must point at this server and ports 80/443 must be open).
+{$DOMAIN} {
+	# reverse_proxy passes WebSocket upgrades through as is. Caddy sets
+	# X-Forwarded-For to the client address and drops any value the client
+	# sent, so the app can trust its first entry.
+	reverse_proxy app:8080
+
+	# Access log without secrets: the WebSocket handshake carries
+	# ?access_token=..., the OAuth callback carries ?code=&state=, and its
+	# redirect's Location header carries the issued tokens. Authorization
+	# and Cookie headers are already redacted by Caddy.
+	log {
+		output stdout
+		format filter {
+			request>uri query {
+				delete access_token
+				delete code
+				delete state
+			}
+			resp_headers>Location delete
+		}
+	}
+}

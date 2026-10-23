@@ -17,6 +17,7 @@ coverage.txt
 .env
 .env.local
 .env.*.local
+.env.prod
 
 # IDE
 .idea/
