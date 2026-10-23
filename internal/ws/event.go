@@ -32,6 +32,11 @@ const LeftReasonDisconnect = "disconnect"
 // left_reason) when the server removed the user from the room.
 const LeftReasonKicked = "kicked"
 
+// LeftReasonKickedNoExtension is the user_left reason (and
+// room_participations left_reason) when the server removed the user because
+// they declined or ignored the task extension prompt.
+const LeftReasonKickedNoExtension = "kicked_no_extension"
+
 // StatusRemovedFromRoom closes sockets of a user the server removed from the
 // room (kicked); clients must not reconnect without joining again.
 const StatusRemovedFromRoom websocket.StatusCode = 4001

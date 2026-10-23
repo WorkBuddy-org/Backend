@@ -325,7 +325,10 @@ chat, starting a task timer, and getting a call token.
 ```
 
 The participation's `left_at` and `left_reason` are *omitted when empty*
-(always, for an open participation).
+(always, for an open participation). `left_reason` is one of
+`left_voluntarily`, `kicked_no_extension` (declined or ignored the task
+extension prompt) or `kicked` (other removal by the server; nothing emits it
+today). `completed_no_extension` is reserved.
 
 Errors: `400 invalid room id`, `401`, `404 room not found`.
 
@@ -535,8 +538,9 @@ Errors:
 Answer the extension prompt with "no". **Auth:** required (owner only). No body.
 
 The timer ends and the user is **removed from the room**, exactly as when the
-prompt times out: their sockets get `kicked`, the room gets `user_left`.
-They can join again later.
+prompt times out: their sockets get `kicked`, the room gets `user_left`, both
+with reason `kicked_no_extension`, and the participation is closed with
+`left_reason: "kicked_no_extension"`. They can join again later.
 
 `200 OK` → task object (`timer_status: "ended"`).
 
@@ -560,7 +564,8 @@ The full event sequence is in [ws-protocol.md](ws-protocol.md) (sections
    - `POST /tasks/{id}/extend` → `task_extended`, and the timer runs again
      (back to step 3 when it ends);
    - `POST /tasks/{id}/no-extend`, or no answer by the deadline → the timer
-     ends and the user is removed from the room (`kicked`).
+     ends and the user is removed from the room (`kicked` event, reason
+     `kicked_no_extension`).
 5. Completing the task (`PATCH /tasks/{id}` with `completed: true`) at any
    point ends the timer (`timer_ended`, reason `completed`).
 

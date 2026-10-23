@@ -122,7 +122,7 @@ questions and neither is a cache of the other:
 | Answers | "Who is in the room right now?" | "Who was in the room, when, and for how long?" |
 | Lifetime | Ephemeral — reflects live connection state | Durable — one row per join, with `joined_at`/`left_at` |
 | Written on | Every join/leave/disconnect | Join (insert) and leave (update `left_at` + `left_reason`) |
-| Used for | Live presence indicators, real-time room state | Stats, presence history, distinguishing why someone left (`completed_no_extension` / `kicked` / `left_voluntarily`) |
+| Used for | Live presence indicators, real-time room state | Stats, presence history, distinguishing why someone left (`completed_no_extension` / `kicked_no_extension` / `kicked` / `left_voluntarily`) |
 
 In practice: a join opens both a Redis set entry and a `room_participations`
 row; a leave closes both. If the two ever disagree (e.g. after a crash), the

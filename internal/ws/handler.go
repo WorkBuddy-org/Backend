@@ -236,10 +236,10 @@ func (h *Handler) leave(c *client) {
 // UserLeft implements room.LeaveListener: after a user's participation in
 // the room is closed, their sockets to it are closed, presence is cleared and
 // the room gets a single user_left with the given reason. A voluntary leave
-// closes with 1000; a kick first sends kicked to those sockets and closes
-// with 4001.
+// closes with 1000; a kick (either kicked reason) first sends kicked to those
+// sockets and closes with 4001.
 func (h *Handler) UserLeft(roomID, userID uuid.UUID, reason string) {
-	if reason == LeftReasonKicked {
+	if reason == LeftReasonKicked || reason == LeftReasonKickedNoExtension {
 		kicked := NewEvent(TypeKicked, roomID, KickedData{Reason: reason})
 		h.removeFromRoom(roomID, userID, reason, StatusRemovedFromRoom, "removed from room", &kicked)
 		return
