@@ -15,6 +15,7 @@ import (
 	"github.com/workbuddy/backend/internal/httpapi"
 	"github.com/workbuddy/backend/internal/invite"
 	"github.com/workbuddy/backend/internal/platform/postgres"
+	"github.com/workbuddy/backend/internal/platform/ratelimit"
 	"github.com/workbuddy/backend/internal/platform/redis"
 	"github.com/workbuddy/backend/internal/profile"
 	"github.com/workbuddy/backend/internal/room"
@@ -128,10 +129,18 @@ func main() {
 		chatLimiter = chat.NewRedisRateLimiter(redisClient, cfg.ChatRateLimit, cfg.ChatRateWindow, "")
 	}
 
+	authHandler := auth.NewHandler(authService)
+	if cfg.RegisterRateLimit > 0 {
+		authHandler.SetRegisterLimiter(ratelimit.NewFixedWindow(redisClient, cfg.RegisterRateLimit, cfg.RegisterRateWindow))
+	}
+	if cfg.TrustedProxyHeader == "" {
+		slog.Info("TRUSTED_PROXY_HEADER is empty: client IPs are taken from the connection address")
+	}
+
 	router := httpapi.NewRouter(httpapi.RouterDeps{
 		DB:             db,
 		Redis:          redisClient,
-		AuthHandler:    auth.NewHandler(authService),
+		AuthHandler:    authHandler,
 		AuthMW:         auth.NewMiddleware(tokenManager),
 		RoomHandler:    room.NewHandler(roomService),
 		InviteHandler:  invite.NewHandler(inviteService),
@@ -140,6 +149,8 @@ func main() {
 		ChatHandler:    chat.NewHandler(chat.NewService(chat.NewRepository(db), roomService, wsHub, chatLimiter)),
 		WSHandler:      wsHandler,
 		CallHandler:    call.NewHandler(callService),
+
+		TrustedProxyHeader: cfg.TrustedProxyHeader,
 	})
 	addr := ":" + cfg.Port
 	srv := server.New(addr, router)

@@ -48,7 +48,7 @@ Statuses used across the API:
 | `403` | Authenticated, but not allowed (not the task owner, not in the room) |
 | `404` | Resource not found |
 | `409` | Conflict with the current state (timer already running, prompt expired, …) |
-| `429` | Rate limited (login attempts, chat messages). Always has a `Retry-After` header: whole seconds to wait. |
+| `429` | Rate limited (registration, login attempts, chat messages). Always has a `Retry-After` header: whole seconds to wait. |
 | `502` | OAuth provider failed |
 | `503` | A dependency or feature is not configured/available |
 
@@ -113,7 +113,15 @@ Request:
 
 Errors: `400 invalid email address`, `400 password must be at least 8 characters`,
 `400 invalid request body`, `409 email already registered with another provider`
-(the email is taken by any account).
+(the email is taken by any account),
+`429 too many registration attempts, try again later`: more than 5 requests
+from the same client IP within 10 minutes (`REGISTER_RATE_LIMIT` /
+`REGISTER_RATE_WINDOW`; the window starts at the first request). Every
+request counts, including failed ones. The `Retry-After` header gives the
+seconds until the window resets. If the server's Redis is unavailable,
+requests aren't limited. The client IP is the connection address, or the
+first `X-Forwarded-For` value when the server runs behind a proxy with
+`TRUSTED_PROXY_HEADER` set.
 
 ### `POST /auth/login`
 

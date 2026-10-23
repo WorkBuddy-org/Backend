@@ -38,6 +38,9 @@ All settings come from environment variables. In development (`ENV` unset or
 | `EXTENSION_MAX_COUNT` | `3` | Maximum timer extensions per task. |
 | `CHAT_RATE_LIMIT` | `10` | Chat messages a user may send per `CHAT_RATE_WINDOW`, across all rooms; `0` disables the limit. |
 | `CHAT_RATE_WINDOW` | `10s` | Length of the chat rate-limit window (fixed window, kept in Redis). |
+| `REGISTER_RATE_LIMIT` | `5` | `POST /auth/register` requests one client IP may make per `REGISTER_RATE_WINDOW`; `0` disables the limit. |
+| `REGISTER_RATE_WINDOW` | `10m` | Length of the registration rate-limit window (fixed window, kept in Redis). |
+| `TRUSTED_PROXY_HEADER` | empty | Header whose first value is the client IP, e.g. `X-Forwarded-For`; empty uses the connection address. Set it only when the API is reachable solely through a proxy that overwrites the header, or clients can spoof their IP. |
 | `LIVEKIT_URL` | empty | LiveKit server URL returned to clients with a call token. |
 | `LIVEKIT_API_KEY` | empty | LiveKit API key; issuer of call tokens. |
 | `LIVEKIT_API_SECRET` | empty | LiveKit API secret that signs call tokens; never sent to clients. If any `LIVEKIT_*` is empty, `POST /rooms/{id}/call/token` returns 503. |

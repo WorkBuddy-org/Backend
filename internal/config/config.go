@@ -48,6 +48,17 @@ type Config struct {
 	ChatRateLimit  int
 	ChatRateWindow time.Duration
 
+	// RegisterRateLimit is how many POST /auth/register requests one client
+	// IP may make per RegisterRateWindow; 0 disables the limit.
+	RegisterRateLimit  int
+	RegisterRateWindow time.Duration
+
+	// TrustedProxyHeader names the header (e.g. X-Forwarded-For) whose first
+	// value replaces the connection address as the client IP. Empty means
+	// the connection address is used. Set it only when every request comes
+	// through a proxy that overwrites the header.
+	TrustedProxyHeader string
+
 	// LiveKit settings for audio/video calls. When any is empty, call token
 	// requests answer 503.
 	LiveKitURL       string
@@ -83,6 +94,8 @@ func Load() (*Config, error) {
 
 		WSAllowedOrigins: splitList(getEnv("WS_ALLOWED_ORIGINS", "")),
 
+		TrustedProxyHeader: strings.TrimSpace(getEnv("TRUSTED_PROXY_HEADER", "")),
+
 		LiveKitURL:       getEnv("LIVEKIT_URL", ""),
 		LiveKitAPIKey:    getEnv("LIVEKIT_API_KEY", ""),
 		LiveKitAPISecret: getEnv("LIVEKIT_API_SECRET", ""),
@@ -117,6 +130,16 @@ func Load() (*Config, error) {
 	cfg.ChatRateWindow, err = time.ParseDuration(getEnv("CHAT_RATE_WINDOW", "10s"))
 	if err != nil || cfg.ChatRateWindow < time.Millisecond {
 		return nil, fmt.Errorf("parse CHAT_RATE_WINDOW: must be a positive duration such as 10s")
+	}
+
+	cfg.RegisterRateLimit, err = strconv.Atoi(getEnv("REGISTER_RATE_LIMIT", "5"))
+	if err != nil || cfg.RegisterRateLimit < 0 {
+		return nil, fmt.Errorf("parse REGISTER_RATE_LIMIT: must be a non-negative integer")
+	}
+
+	cfg.RegisterRateWindow, err = time.ParseDuration(getEnv("REGISTER_RATE_WINDOW", "10m"))
+	if err != nil || cfg.RegisterRateWindow < time.Millisecond {
+		return nil, fmt.Errorf("parse REGISTER_RATE_WINDOW: must be a positive duration such as 10m")
 	}
 
 	if cfg.DatabaseURL == "" {
