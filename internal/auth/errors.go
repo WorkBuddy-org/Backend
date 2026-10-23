@@ -1,6 +1,9 @@
 package auth
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 var (
 	ErrInvalidToken       = errors.New("invalid token")
@@ -15,3 +18,12 @@ var (
 	ErrInvalidEmail       = errors.New("invalid email address")
 	ErrRateLimited        = errors.New("too many login attempts, try again later")
 )
+
+// RateLimitedError is ErrRateLimited with how long until the next attempt is
+// accepted; errors.Is(err, ErrRateLimited) still holds.
+type RateLimitedError struct {
+	RetryAfter time.Duration
+}
+
+func (e *RateLimitedError) Error() string { return ErrRateLimited.Error() }
+func (e *RateLimitedError) Unwrap() error { return ErrRateLimited }

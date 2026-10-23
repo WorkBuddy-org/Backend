@@ -48,7 +48,7 @@ Statuses used across the API:
 | `403` | Authenticated, but not allowed (not the task owner, not in the room) |
 | `404` | Resource not found |
 | `409` | Conflict with the current state (timer already running, prompt expired, …) |
-| `429` | Rate limited (login attempts, chat messages) |
+| `429` | Rate limited (login attempts, chat messages). Always has a `Retry-After` header: whole seconds to wait. |
 | `502` | OAuth provider failed |
 | `503` | A dependency or feature is not configured/available |
 
@@ -127,8 +127,10 @@ Errors:
 - `401 invalid email or password`: unknown email, OAuth-only account or wrong
   password (deliberately indistinguishable).
 - `429 too many login attempts, try again later`: more than 5 attempts for
-  the same email within 15 minutes. The counter resets on a successful login.
-  There is no `Retry-After` header.
+  the same email within 15 minutes (the window starts at the first attempt).
+  The `Retry-After` header gives the seconds until the window resets. A
+  successful login resets the counter. If the server's Redis is unavailable,
+  attempts aren't limited (same as chat).
 - `400 invalid request body`.
 
 ### `POST /auth/refresh`
@@ -225,20 +227,23 @@ Errors: `401`, `404 user not found`.
 
 **Auth:** required. Partial update. Send only the fields to change.
 
-| Field | Type | Rules |
+| Field | Type | Rules (after trimming whitespace; lengths in characters) |
 |---|---|---|
-| `name` | string | Trimmed. Not otherwise validated. |
-| `role` | string | Trimmed. |
-| `stack` | string | Trimmed. |
-| `timezone` | string | Trimmed. Not validated (IANA name expected, e.g. `Europe/Berlin`). |
+| `name` | string | 1–100 characters. Can't be empty. |
+| `role` | string | 0–100 characters. `""` clears it. |
+| `stack` | string | 0–200 characters. `""` clears it. |
+| `timezone` | string | A valid IANA time zone name, e.g. `Europe/Berlin`, `America/Argentina/Buenos_Aires`, `UTC`. Case-sensitive. Offsets like `+03:00`, `""` and `Local` are rejected. |
 
-A field that is absent or `null` is left unchanged. A field can't be cleared
-back to "unset"; sending `""` stores an empty string.
+A field that is absent or `null` is left unchanged. A cleared `role`/`stack`
+comes back as `""`. If any field is invalid, nothing is saved.
 
 `200 OK` → the full profile (same shape as `GET /profile`).
 
-Errors: `400 no fields to update` (none of the four fields present),
-`400 invalid request body`, `401`, `404 user not found`.
+Errors (all `400` unless noted): `no fields to update` (none of the four
+fields present), `name must be 1-100 characters`,
+`role must be at most 100 characters`, `stack must be at most 200 characters`,
+`timezone must be a valid IANA time zone name, e.g. Europe/Berlin`,
+`invalid request body`; `401`; `404 user not found`.
 
 ## Rooms
 
@@ -278,16 +283,11 @@ Errors: `401`.
 
 ```json
 {
-  "room": { "id": "0b6e…", "name": "Deep Focus", "type": "focus", "tags": ["quiet"], "created_at": "…" },
-  "active_session": {
-    "id": "…", "room_id": "0b6e…", "started_at": "…", "status": "focus"
-  }
+  "room": { "id": "0b6e…", "name": "Deep Focus", "type": "focus", "tags": ["quiet"], "created_at": "…" }
 }
 ```
 
-`active_session` is *omitted when empty* (no session running). Its `status` is
-`"focus"` or `"break"`, and `ended_at` is omitted while it's running. Note: the
-current server never starts room sessions, so this field is absent in practice.
+Rooms have no sessions: timers are per task (see [Timer flow](#timer-flow)).
 
 Errors: `400 invalid room id`, `401`, `404 room not found`.
 
@@ -316,8 +316,8 @@ chat, starting a task timer, and getting a call token.
 }
 ```
 
-`active_session` (as in `GET /rooms/{id}`) and the participation's
-`session_id`, `left_at`, `left_reason` are *omitted when empty*.
+The participation's `left_at` and `left_reason` are *omitted when empty*
+(always, for an open participation).
 
 Errors: `400 invalid room id`, `401`, `404 room not found`.
 
@@ -330,11 +330,28 @@ a `user_left` event.
 
 Errors: `400 invalid room id`, `401`, `404 not currently in this room`.
 
-### Participants
+### `GET /rooms/{id}/participants`
 
-There is no REST endpoint that lists a room's participants. The live list
-comes over the room WebSocket: `presence_snapshot` on connect, then
-`user_joined` / `user_left` (see [ws-protocol.md](ws-protocol.md)).
+Who is in the room right now (users with an open participation: joined and not
+left or removed). **Auth:** required, and the caller must be in the room too.
+
+`200 OK` → array, earliest joiner first. It always includes the caller:
+
+```json
+[
+  { "user_id": "6f1c…", "name": "Ada", "joined_at": "2026-10-22T14:03:11.482913Z" },
+  { "user_id": "8a2d…", "name": "Linus", "joined_at": "2026-10-22T14:05:40.019311Z" }
+]
+```
+
+- There is no online status: a participant may have no open WebSocket. For
+  "online now", use WS presence (`presence_snapshot`, `user_joined`,
+  `user_left`; see [ws-protocol.md](ws-protocol.md)).
+- No avatar field yet: users have no avatar URL.
+
+Errors: `400 invalid room id`, `401`,
+`403 join the room to see its participants` (caller not in the room, or the
+room doesn't exist).
 
 ## Invites
 
@@ -422,12 +439,21 @@ Errors: `400 invalid room id`, `400 text is required`,
 
 ### `GET /tasks/me`
 
-All of the current user's tasks across rooms, newest first. **Auth:** required.
-No pagination.
+The current user's tasks across rooms, newest first, one page at a time.
+**Auth:** required.
 
-`200 OK` → array of task objects (`[]` when none).
+| Param | Default | Rules |
+|---|---|---|
+| `limit` | 50 | Positive integer. Values above 100 are capped to 100. |
+| `offset` | 0 | Non-negative integer: how many tasks to skip. |
 
-Errors: `401`.
+`200 OK` → a plain array of task objects (`[]` when none, or past the end).
+There is no total count: a page shorter than `limit` is the last one. To load
+more, request `?offset=<items loaded so far>`. Tasks created meanwhile shift
+the offsets, so de-duplicate by `id`.
+
+Errors: `400 limit must be a positive integer`,
+`400 offset must be a non-negative integer`, `401`.
 
 ### `PATCH /tasks/{id}`
 
@@ -438,16 +464,17 @@ Edit or complete your own task. **Auth:** required (owner only).
 | `text` | string | Optional. Trimmed, must not be empty. |
 | `completed` | bool | Optional. `true` completes (sets `completed_at` to now), `false` un-completes. |
 
-Absent fields are unchanged. An empty `{}` is accepted and returns the task.
+Absent (or `null`) fields are unchanged, but at least one must be present:
+`{}` is a `400 no fields to update`, the same as `PATCH /profile`.
 Completing a task whose timer is `running` or `prompting` ends the timer
 (`timer_status: "ended"`), and the room receives `timer_ended` with reason
 `completed`.
 
 `200 OK` → task object.
 
-Errors: `400 invalid task id`, `400 text is required`,
-`400 invalid request body`, `401`, `403 not the owner of this task`,
-`404 task not found`.
+Errors: `400 invalid task id`, `400 no fields to update`,
+`400 text is required`, `400 invalid request body`, `401`,
+`403 not the owner of this task`, `404 task not found`.
 
 There is no endpoint to delete a task.
 
@@ -681,6 +708,7 @@ and the failing check set to `"unavailable"`.
 | GET | `/rooms/{id}` | Bearer |
 | POST | `/rooms/{id}/join` | Bearer |
 | POST | `/rooms/{id}/leave` | Bearer |
+| GET | `/rooms/{id}/participants` | Bearer + in room |
 | GET | `/rooms/{id}/ws` | `?access_token=` |
 | POST | `/rooms/{id}/messages` | Bearer + in room |
 | GET | `/rooms/{id}/messages` | Bearer + in room |

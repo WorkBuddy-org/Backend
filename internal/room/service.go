@@ -98,6 +98,20 @@ func (s *Service) HasOpenParticipation(ctx context.Context, roomID, userID uuid.
 	return existing != nil, nil
 }
 
+// ListParticipants returns who is currently in the room. The caller must be in
+// the room too; a room that does not exist has no participants, so it gets
+// ErrNotMember as well.
+func (s *Service) ListParticipants(ctx context.Context, roomID, callerID uuid.UUID) ([]Participant, error) {
+	inRoom, err := s.HasOpenParticipation(ctx, roomID, callerID)
+	if err != nil {
+		return nil, err
+	}
+	if !inRoom {
+		return nil, ErrNotMember
+	}
+	return s.repo.ListParticipants(ctx, roomID)
+}
+
 func (s *Service) Leave(ctx context.Context, roomID, userID uuid.UUID) error {
 	existing, err := s.repo.FindOpenParticipation(ctx, userID, roomID)
 	if err != nil {

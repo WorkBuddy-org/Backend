@@ -128,6 +128,42 @@ func (r *Repository) FindOpenParticipation(ctx context.Context, userID, roomID u
 	return &p, nil
 }
 
+// ListParticipants returns the users with an open participation in the room,
+// earliest joiner first. A user with several open rows appears once, with the
+// earliest joined_at.
+func (r *Repository) ListParticipants(ctx context.Context, roomID uuid.UUID) ([]Participant, error) {
+	const query = `
+		SELECT user_id, name, joined_at
+		FROM (
+			SELECT DISTINCT ON (p.user_id) p.user_id, u.name, p.joined_at
+			FROM room_participations p
+			JOIN users u ON u.id = p.user_id
+			WHERE p.room_id = $1 AND p.left_at IS NULL
+			ORDER BY p.user_id, p.joined_at
+		) open
+		ORDER BY joined_at, user_id
+	`
+
+	rows, err := r.db.Query(ctx, query, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("list participants: %w", err)
+	}
+	defer rows.Close()
+
+	participants := []Participant{}
+	for rows.Next() {
+		var p Participant
+		if err := rows.Scan(&p.UserID, &p.Name, &p.JoinedAt); err != nil {
+			return nil, fmt.Errorf("scan participant: %w", err)
+		}
+		participants = append(participants, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list participants: %w", err)
+	}
+	return participants, nil
+}
+
 func (r *Repository) CreateParticipation(ctx context.Context, userID, roomID uuid.UUID, sessionID *uuid.UUID) (*Participation, error) {
 	const query = `
 		INSERT INTO room_participations (user_id, room_id, session_id)

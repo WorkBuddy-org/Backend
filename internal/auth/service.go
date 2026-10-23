@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/workbuddy/backend/internal/platform/ratelimit"
 	"github.com/workbuddy/backend/internal/user"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -24,6 +26,7 @@ type Service struct {
 	refreshTTL          time.Duration
 	frontendCallbackURL string
 	redis               *goredis.Client
+	loginLimiter        *ratelimit.FixedWindow
 }
 
 func NewService(repo *Repository, tokens *TokenManager, oauth *OAuthRegistry, refreshTTL time.Duration, frontendCallbackURL string, redisClient *goredis.Client) *Service {
@@ -34,6 +37,7 @@ func NewService(repo *Repository, tokens *TokenManager, oauth *OAuthRegistry, re
 		refreshTTL:          refreshTTL,
 		frontendCallbackURL: frontendCallbackURL,
 		redis:               redisClient,
+		loginLimiter:        ratelimit.NewFixedWindow(redisClient, maxLoginAttempts, loginAttemptsTTL),
 	}
 }
 
@@ -197,22 +201,19 @@ func (s *Service) AuthenticatePassword(ctx context.Context, email, password stri
 	return u, nil
 }
 
+// checkLoginRateLimit counts a login attempt for the email: maxLoginAttempts
+// per loginAttemptsTTL window, starting with the first attempt. If Redis
+// fails, the attempt is let through, like the chat limiter: login stays
+// usable while Redis is down.
 func (s *Service) checkLoginRateLimit(ctx context.Context, email string) error {
-	key := loginAttemptsKey(email)
-
-	count, err := s.redis.Incr(ctx, key).Result()
+	allowed, retryAfter, err := s.loginLimiter.Allow(ctx, loginAttemptsKey(email))
 	if err != nil {
-		return fmt.Errorf("check login rate limit: %w", err)
+		slog.Warn("login rate limiter unavailable, allowing attempt", "error", err)
+		return nil
 	}
-	if count == 1 {
-		if err := s.redis.Expire(ctx, key, loginAttemptsTTL).Err(); err != nil {
-			return fmt.Errorf("set login rate limit ttl: %w", err)
-		}
+	if !allowed {
+		return &RateLimitedError{RetryAfter: retryAfter}
 	}
-	if count > maxLoginAttempts {
-		return ErrRateLimited
-	}
-
 	return nil
 }
 

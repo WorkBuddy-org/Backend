@@ -27,6 +27,7 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *auth.Middleware) 
 		r.Get("/rooms/{id}", h.get)
 		r.Post("/rooms/{id}/join", h.join)
 		r.Post("/rooms/{id}/leave", h.leave)
+		r.Get("/rooms/{id}/participants", h.participants)
 	})
 }
 
@@ -38,32 +39,29 @@ type roomDTO struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type sessionDTO struct {
-	ID        uuid.UUID  `json:"id"`
-	RoomID    uuid.UUID  `json:"room_id"`
-	StartedAt time.Time  `json:"started_at"`
-	EndedAt   *time.Time `json:"ended_at,omitempty"`
-	Status    string     `json:"status"`
-}
-
 type participationDTO struct {
 	ID         uuid.UUID  `json:"id"`
 	UserID     uuid.UUID  `json:"user_id"`
 	RoomID     uuid.UUID  `json:"room_id"`
-	SessionID  *uuid.UUID `json:"session_id,omitempty"`
 	JoinedAt   time.Time  `json:"joined_at"`
 	LeftAt     *time.Time `json:"left_at,omitempty"`
 	LeftReason *string    `json:"left_reason,omitempty"`
 }
 
+type participantDTO struct {
+	UserID   uuid.UUID `json:"user_id"`
+	Name     string    `json:"name"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+// Rooms are not session-based (timers are per task), so room responses carry
+// no session fields.
 type roomDetailResponse struct {
-	Room          roomDTO     `json:"room"`
-	ActiveSession *sessionDTO `json:"active_session,omitempty"`
+	Room roomDTO `json:"room"`
 }
 
 type joinResponse struct {
 	Room          roomDTO          `json:"room"`
-	ActiveSession *sessionDTO      `json:"active_session,omitempty"`
 	Participation participationDTO `json:"participation"`
 }
 
@@ -77,25 +75,11 @@ func toRoomDTO(rm *Room) roomDTO {
 	}
 }
 
-func toSessionDTO(s *Session) *sessionDTO {
-	if s == nil {
-		return nil
-	}
-	return &sessionDTO{
-		ID:        s.ID,
-		RoomID:    s.RoomID,
-		StartedAt: s.StartedAt,
-		EndedAt:   s.EndedAt,
-		Status:    s.Status,
-	}
-}
-
 func toParticipationDTO(p *Participation) participationDTO {
 	return participationDTO{
 		ID:         p.ID,
 		UserID:     p.UserID,
 		RoomID:     p.RoomID,
-		SessionID:  p.SessionID,
 		JoinedAt:   p.JoinedAt,
 		LeftAt:     p.LeftAt,
 		LeftReason: p.LeftReason,
@@ -130,7 +114,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rm, session, err := h.service.GetRoomDetail(r.Context(), id)
+	rm, _, err := h.service.GetRoomDetail(r.Context(), id)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, ErrRoomNotFound) {
@@ -140,10 +124,7 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, roomDetailResponse{
-		Room:          toRoomDTO(rm),
-		ActiveSession: toSessionDTO(session),
-	})
+	httpx.JSON(w, http.StatusOK, roomDetailResponse{Room: toRoomDTO(rm)})
 }
 
 func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +152,6 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 
 	httpx.JSON(w, http.StatusOK, joinResponse{
 		Room:          toRoomDTO(result.Room),
-		ActiveSession: toSessionDTO(result.ActiveSession),
 		Participation: toParticipationDTO(result.Participation),
 	})
 }
@@ -199,4 +179,34 @@ func (h *Handler) leave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) participants(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		return
+	}
+
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		return
+	}
+
+	participants, err := h.service.ListParticipants(r.Context(), id, userID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrNotMember) {
+			status = http.StatusForbidden
+		}
+		httpx.Error(w, status, err.Error())
+		return
+	}
+
+	dtos := make([]participantDTO, len(participants))
+	for i, p := range participants {
+		dtos[i] = participantDTO(p)
+	}
+	httpx.JSON(w, http.StatusOK, dtos)
 }

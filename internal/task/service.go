@@ -85,6 +85,10 @@ func (s *Service) Create(ctx context.Context, roomID, userID uuid.UUID, text str
 }
 
 func (s *Service) Update(ctx context.Context, taskID, userID uuid.UUID, update Update) (*Task, error) {
+	if update.Text == nil && update.Completed == nil {
+		return nil, ErrNoFields
+	}
+
 	existing, err := s.repo.FindByID(ctx, taskID)
 	if err != nil {
 		return nil, err
@@ -111,6 +115,8 @@ func (s *Service) Update(ctx context.Context, taskID, userID uuid.UUID, update U
 	return updated, nil
 }
 
-func (s *Service) ListByUser(ctx context.Context, userID uuid.UUID) ([]Task, error) {
-	return s.repo.ListByUser(ctx, userID)
+// ListByUser returns a page of the user's tasks, newest first. limit must
+// already be within 1..MaxListLimit and offset non-negative.
+func (s *Service) ListByUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Task, error) {
+	return s.repo.ListByUser(ctx, userID, limit, offset)
 }

@@ -6,6 +6,7 @@ var (
 	ErrTaskNotFound = errors.New("task not found")
 	ErrForbidden    = errors.New("not the owner of this task")
 	ErrTextRequired = errors.New("text is required")
+	ErrNoFields     = errors.New("no fields to update")
 
 	ErrInvalidDuration = errors.New("duration_minutes must be one of 25, 50, 90")
 	ErrTaskCompleted   = errors.New("task is already completed")

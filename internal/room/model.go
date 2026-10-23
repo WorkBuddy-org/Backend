@@ -22,6 +22,13 @@ type Session struct {
 	Status    string
 }
 
+// Participant is a user currently in a room.
+type Participant struct {
+	UserID   uuid.UUID
+	Name     string
+	JoinedAt time.Time
+}
+
 type Participation struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID

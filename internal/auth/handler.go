@@ -214,10 +214,12 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	u, err := h.service.AuthenticatePassword(r.Context(), req.Email, req.Password)
 	if err != nil {
 		status := http.StatusInternalServerError
+		var limited *RateLimitedError
 		switch {
 		case errors.Is(err, ErrInvalidCredentials):
 			status = http.StatusUnauthorized
-		case errors.Is(err, ErrRateLimited):
+		case errors.As(err, &limited):
+			httpx.RetryAfter(w, limited.RetryAfter)
 			status = http.StatusTooManyRequests
 		}
 		httpx.Error(w, status, err.Error())

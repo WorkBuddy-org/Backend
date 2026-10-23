@@ -55,15 +55,18 @@ func (r *Repository) FindByID(ctx context.Context, id uuid.UUID) (*Task, error) 
 	return scanTask(row)
 }
 
-func (r *Repository) ListByUser(ctx context.Context, userID uuid.UUID) ([]Task, error) {
+// ListByUser returns one page of the user's tasks, newest first. id breaks
+// ties so pages are stable.
+func (r *Repository) ListByUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Task, error) {
 	const query = `
 		SELECT ` + taskColumns + `
 		FROM tasks
 		WHERE user_id = $1
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2 OFFSET $3
 	`
 
-	rows, err := r.db.Query(ctx, query, userID)
+	rows, err := r.db.Query(ctx, query, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
