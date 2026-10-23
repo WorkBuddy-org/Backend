@@ -437,12 +437,14 @@ Task object:
 Create a task in a room. **Auth:** required. Being in the room is **not**
 required to create a task, only to start its timer.
 
-Request: `{ "text": "string" }`. Trimmed, must not be empty. No maximum
-length.
+Request: `{ "text": "string" }`. Trimmed, then 1–200 characters (Unicode
+code points, not bytes). Tasks have a single text field; there is no
+separate description.
 
 `201 Created` → task object (`timer_status: "idle"`).
 
 Errors: `400 invalid room id`, `400 text is required`,
+`400 text must be at most 200 characters`,
 `400 invalid request body`, `401`, `404 room not found`.
 
 ### `GET /tasks/me`
@@ -469,7 +471,7 @@ Edit or complete your own task. **Auth:** required (owner only).
 
 | Field | Type | Rules |
 |---|---|---|
-| `text` | string | Optional. Trimmed, must not be empty. |
+| `text` | string | Optional. Trimmed, then 1–200 characters, as on create. |
 | `completed` | bool | Optional. `true` completes (sets `completed_at` to now), `false` un-completes. |
 
 Absent (or `null`) fields are unchanged, but at least one must be present:
@@ -481,7 +483,8 @@ Completing a task whose timer is `running` or `prompting` ends the timer
 `200 OK` → task object.
 
 Errors: `400 invalid task id`, `400 no fields to update`,
-`400 text is required`, `400 invalid request body`, `401`,
+`400 text is required`, `400 text must be at most 200 characters`,
+`400 invalid request body`, `401`,
 `403 not the owner of this task`, `404 task not found`.
 
 There is no endpoint to delete a task.
