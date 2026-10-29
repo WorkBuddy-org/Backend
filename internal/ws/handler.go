@@ -101,7 +101,8 @@ func NewHandler(deps HandlerDeps) *Handler {
 
 // RegisterRoutes mounts the WebSocket endpoint. It sits outside RequireAuth
 // because browsers cannot set headers on a WebSocket handshake; the token
-// comes from ?access_token= instead.
+// comes from the access_token cookie or ?access_token= instead, and the
+// Origin allow-list stands in for the CSRF check.
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Get("/rooms/{id}/ws", h.connect)
 }
@@ -160,10 +161,15 @@ func (h *Handler) connect(w http.ResponseWriter, r *http.Request) {
 	h.leave(c)
 }
 
-// authenticate returns the user of the handshake's access token. Errors wrap
-// auth.ErrTokenExpired or auth.ErrInvalidToken for auth.WriteTokenError.
+// authenticate returns the user of the handshake's access token: the
+// access_token cookie, which browsers send on the upgrade request, or else
+// the ?access_token= query parameter. Errors wrap auth.ErrTokenExpired or
+// auth.ErrInvalidToken for auth.WriteTokenError.
 func (h *Handler) authenticate(r *http.Request) (uuid.UUID, error) {
-	token := r.URL.Query().Get("access_token")
+	token := auth.AccessTokenFromCookie(r)
+	if token == "" {
+		token = r.URL.Query().Get("access_token")
+	}
 	if token == "" {
 		return uuid.Nil, auth.ErrInvalidToken
 	}

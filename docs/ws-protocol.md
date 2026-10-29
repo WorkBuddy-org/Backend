@@ -13,13 +13,15 @@ types and unknown fields; new fields may be added without notice.
 ## 1. Connecting
 
 ```
-GET /rooms/{room_id}/ws?access_token={access_token}
+GET /rooms/{room_id}/ws
 ```
 
-- Scheme: `wss://` in production, `ws://` locally (`ws://localhost:8080/rooms/{room_id}/ws?access_token=…`).
-- `access_token`: the same JWT access token used in `Authorization: Bearer …`
-  for REST. It goes in the query string because browsers cannot set headers
-  on a WebSocket handshake.
+- Scheme: `wss://` in production, `ws://` locally (`ws://localhost:8080/rooms/{room_id}/ws`).
+- **Auth:** the `access_token` cookie set by login (see
+  [api.md](api.md#authentication)). Browsers send it on the upgrade request
+  automatically, so `new WebSocket(url)` needs nothing extra. Fallback for
+  non-browser clients: the same JWT in the query string,
+  `?access_token={access_token}`. When both are present the cookie wins.
 - **Join first.** The user must have an open participation in the room:
   call `POST /rooms/{room_id}/join` (REST) before connecting, otherwise the
   handshake is rejected with 403.
@@ -363,7 +365,7 @@ send time.
 #### Chat REST API
 
 Text only (no files, images, edits, deletes or delivery/read statuses in the
-MVP). Both endpoints require `Authorization: Bearer …` and an **open
+MVP). Both endpoints require authentication (cookie or `Authorization: Bearer …`) and an **open
 participation** in the room (joined and not left/kicked); otherwise `403
 FORBIDDEN` ("join the room before using its chat"). A room that does not exist
 has no participants, so it also gets 403.

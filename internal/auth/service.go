@@ -56,6 +56,11 @@ func (s *Service) FrontendCallbackURL() string {
 	return s.frontendCallbackURL
 }
 
+// RefreshTTL is how long an issued refresh token stays valid.
+func (s *Service) RefreshTTL() time.Duration {
+	return s.refreshTTL
+}
+
 func (s *Service) AuthenticateOAuthUser(ctx context.Context, profile *OAuthProfile) (*user.User, error) {
 	existing, err := s.repo.FindUserByOAuth(ctx, profile.Provider, profile.OAuthID)
 	if err == nil {

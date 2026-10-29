@@ -97,54 +97,68 @@ below, not this format.
 
 ## Authentication
 
-Protected endpoints need an access token in the `Authorization` header:
+The browser frontend authenticates with **HttpOnly cookies** set by the
+server; JavaScript never sees the tokens. Call the API with
+`fetch(url, { credentials: "include" })`.
+
+| Cookie | Path | Max-Age | Holds |
+|---|---|---|---|
+| `access_token` | `/` | `JWT_ACCESS_TTL` (15 min) | JWT access token |
+| `refresh_token` | `/auth` | `JWT_REFRESH_TTL` (30 days) | Opaque refresh token; only sent to `/auth/*` |
+
+Both are `HttpOnly`, `SameSite=Lax`, `Secure` in production (`COOKIE_SECURE`),
+with `Domain` from `COOKIE_DOMAIN` (e.g. `.example.com`, so `app.` and `api.`
+share them; host-only when empty). Register, login, refresh and the OAuth
+callback set both; refresh rotates both; logout and a failed refresh clear
+both.
+
+Protected endpoints read the token from the `access_token` cookie, falling
+back to the `Authorization` header for tools and tests:
 
 ```
 Authorization: Bearer <access_token>
 ```
 
-Without a valid header the response is `401 UNAUTHORIZED`
-("missing or invalid authorization header" / "invalid access token"). A
-genuine but expired token gets `401 TOKEN_EXPIRED` instead: refresh, then
-retry. Every protected endpoint below can return these two; they are written
-as just `401`.
+Without a valid token the response is `401 UNAUTHORIZED`. A genuine but
+expired token gets `401 TOKEN_EXPIRED`. Every protected endpoint below can
+return these two; they are written as just `401`.
 
-The WebSocket endpoint can't use headers. It takes the token as
-`?access_token=` instead (see [ws-protocol.md](ws-protocol.md)).
+The WebSocket handshake reads the same `access_token` cookie (browsers send
+it on the upgrade), with `?access_token=` as a fallback (see
+[ws-protocol.md](ws-protocol.md)).
 
-### Token pair
+### CORS
 
-Register, login, refresh and the OAuth callback (JSON mode) return:
+Allowed origins come from `CORS_ALLOWED_ORIGINS` (comma-separated; empty in
+development means `http://localhost:3000`). For those origins the API answers
+preflights and sets `Access-Control-Allow-Credentials: true`. Allowed methods:
+`GET POST PATCH DELETE OPTIONS`; allowed request headers: `Content-Type`,
+`Authorization`; exposed response headers: `Retry-After`.
 
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIs...",
-  "refresh_token": "Zk3p...opaque...",
-  "expires_in": 900,
-  "token_type": "Bearer"
-}
-```
+### CSRF rule
 
-- `access_token`: a JWT valid for `JWT_ACCESS_TTL` (default 15 min).
-  `expires_in` is its lifetime in seconds.
-- `refresh_token`: an opaque string valid for `JWT_REFRESH_TTL` (default 30
-  days). Store it securely.
+A `POST`, `PATCH`, `PUT` or `DELETE` authenticated by a cookie (including
+`/auth/refresh` and `/auth/logout`, which use the refresh cookie) is rejected
+with `403 FORBIDDEN` ("origin not allowed") when it has an `Origin` header that
+is not in `CORS_ALLOWED_ORIGINS`. Requests without `Origin`, and requests
+authenticated by the `Authorization: Bearer` header, are not checked.
 
 ### Refresh flow
 
-1. Call protected endpoints with the access token.
-2. On `401 TOKEN_EXPIRED` (or shortly before `expires_in` runs out), call
-   `POST /auth/refresh` with the refresh token.
-3. The response is a **new pair**. The old refresh token is revoked
-   (rotation), so always replace both tokens. Reusing an old refresh token
-   gives `401 UNAUTHORIZED` ("token revoked").
-4. If refresh fails with `401`, send the user to login.
+1. Call the API with `credentials: "include"`.
+2. On `401` (`TOKEN_EXPIRED`, or `UNAUTHORIZED` once the browser has dropped
+   the expired `access_token` cookie), call `POST /auth/refresh` once, then
+   retry the original request.
+3. `204` means fresh cookies were set. The old refresh token is revoked
+   (rotation), so a replayed one gets `401 UNAUTHORIZED`.
+4. If refresh fails with `401`, the cookies are cleared: send the user to
+   login.
 
 ---
 
 ### `POST /auth/register`
 
-Create an email + password account. **Auth:** none.
+Create an email + password account and sign in. **Auth:** none.
 
 Request:
 
@@ -154,10 +168,14 @@ Request:
 | `password` | string | At least 8 bytes. |
 | `name` | string | Display name. Not validated (may be empty). |
 
-`201 Created` → [token pair](#token-pair).
+`201 Created`, auth cookies set, body:
+
+```json
+{ "user": { "id": "6f1c…", "email": "ada@example.com", "name": "Ada" } }
+```
 
 Errors: `400 VALIDATION_ERROR` ("invalid email address") (`{"email": "INVALID_FORMAT"}`), `400 VALIDATION_ERROR` ("password must be at least 8 characters") (`{"password": "TOO_SHORT"}`),
-`400 VALIDATION_ERROR` ("invalid request body"), `409 EMAIL_EXISTS` ("email already registered with another provider")
+`400 VALIDATION_ERROR` (body errors, see Conventions), `409 EMAIL_EXISTS` ("email already registered with another provider")
 (the email is taken by any account),
 `429 RATE_LIMITED` ("too many registration attempts, try again later"): more than 5 requests
 from the same client IP within 10 minutes (`REGISTER_RATE_LIMIT` /
@@ -174,7 +192,8 @@ first `X-Forwarded-For` value when the server runs behind a proxy with
 
 Request: `{ "email": "string", "password": "string" }`
 
-`200 OK` → [token pair](#token-pair).
+`200 OK`, auth cookies set, body `{ "user": { "id", "email", "name" } }`
+(same as register).
 
 Errors:
 - `401 INVALID_CREDENTIALS` ("invalid email or password"): unknown email, OAuth-only account or wrong
@@ -184,27 +203,28 @@ Errors:
   The `Retry-After` header gives the seconds until the window resets. A
   successful login resets the counter. If the server's Redis is unavailable,
   attempts aren't limited (same as chat).
-- `400 VALIDATION_ERROR` ("invalid request body").
+- `400 VALIDATION_ERROR` (body errors).
 
 ### `POST /auth/refresh`
 
-**Auth:** none. Request: `{ "refresh_token": "string" }`
+**Auth:** the `refresh_token` cookie. No request body (any body is ignored).
 
-`200 OK` → a new [token pair](#token-pair). The submitted refresh token is revoked.
+`204 No Content`: the refresh token is rotated (the old one is revoked) and
+both cookies are set again.
 
-Errors: `400 VALIDATION_ERROR` ("refresh_token is required") (`{"refresh_token": "REQUIRED"}`), `401 UNAUTHORIZED` ("invalid token") (unknown),
-`401 UNAUTHORIZED` ("token expired"), `401 UNAUTHORIZED` ("token revoked").
+Errors: `401 UNAUTHORIZED` ("missing refresh token", "invalid token",
+"token expired", "token revoked"), which also clears both cookies;
+`403 FORBIDDEN` ("origin not allowed", see the CSRF rule).
 
 ### `POST /auth/logout`
 
-Revokes a refresh token. The access token stays valid until it expires, so the
-client should drop it. **Auth:** none.
+**Auth:** the `refresh_token` cookie, if any. No request body.
 
-Request: `{ "refresh_token": "string" }`
+Revokes the cookie's refresh token and clears both cookies. Always
+`204 No Content`, also without a cookie or with an already revoked token. The
+access token itself stays valid until it expires, but its cookie is gone.
 
-`204 No Content`.
-
-Errors: `400 VALIDATION_ERROR` ("refresh_token is required") (`{"refresh_token": "REQUIRED"}`), `401 UNAUTHORIZED` ("invalid token").
+Errors: `403 FORBIDDEN` ("origin not allowed").
 
 ### `GET /auth/me`
 
@@ -231,25 +251,29 @@ Errors: `401`, `404 NOT_FOUND` ("user not found").
    `/auth/google` or `/auth/github`. The server sets a short-lived state
    cookie (10 min, `HttpOnly`, `Secure`, `SameSite=Lax`) and answers
    `302` to the provider. If that provider isn't configured on the server:
-   `503 SERVICE_UNAVAILABLE` ("oauth provider not configured").
+   `503 SERVICE_UNAVAILABLE` ("oauth provider not configured"), as JSON.
 2. **Callback**: the provider redirects back to `…/callback?code=…&state=…`
-   (this URL is configured on the server via `GOOGLE_REDIRECT_URL` /
-   `GITHUB_REDIRECT_URL`). The server finds or creates the user and issues a
-   token pair, then:
-   - by default answers `302` to `FRONTEND_CALLBACK_URL` with the tokens in the
-     query string:
-     `…/auth/callback?access_token=…&refresh_token=…&expires_in=900`.
-     The frontend should read them, store them and remove them from the URL
-     (`history.replaceState`).
-   - if the request has `Accept: application/json`, it answers `200` with the
-     token pair instead of redirecting.
+   (configured on the server via `GOOGLE_REDIRECT_URL` /
+   `GITHUB_REDIRECT_URL`). The server always answers `302` to
+   `FRONTEND_CALLBACK_URL`:
+   - success: the auth cookies are set and the URL is
+     `…/auth/callback?status=ok`;
+   - failure: no cookies, `…/auth/callback?error=<CODE>`.
 
-Callback errors (JSON error body): `403 FORBIDDEN` ("oauth authorization denied") (user
-cancelled), `403 FORBIDDEN` ("invalid oauth state") (missing or mismatched state cookie),
-`400 VALIDATION_ERROR` ("missing authorization code") (`{"code": "REQUIRED"}`), `409 EMAIL_EXISTS` ("email already registered with another provider")
-(the email belongs to an account from a different provider or to an
-email+password account), `502 INTERNAL` ("oauth token exchange failed"),
-`502 INTERNAL` ("failed to fetch oauth profile"), `503 SERVICE_UNAVAILABLE` ("oauth provider not configured").
+   Tokens are never put in the URL.
+
+Callback error codes:
+
+| `error` | Cause |
+|---|---|
+| `FORBIDDEN` | The user denied access at the provider, or the state cookie is missing/mismatched |
+| `VALIDATION_ERROR` | The provider sent no `code` |
+| `EMAIL_EXISTS` | The email belongs to an account from another provider or to an email+password account |
+| `SERVICE_UNAVAILABLE` | That provider isn't configured on the server |
+| `INTERNAL` | Token exchange, profile fetch or token issuing failed |
+
+If `FRONTEND_CALLBACK_URL` itself is not configured, the callback answers
+`500 INTERNAL` as JSON.
 
 ## Profile
 
@@ -730,7 +754,8 @@ Errors: `400 VALIDATION_ERROR` ("invalid room id"), `401`,
 
 ## WebSocket
 
-`GET /rooms/{id}/ws?access_token=<access_token>`. See
+`GET /rooms/{id}/ws`, authenticated by the `access_token` cookie (fallback:
+`?access_token=<access_token>`). See
 [ws-protocol.md](ws-protocol.md) for the handshake, events and close codes.
 Handshake failures are plain HTTP responses with the standard error body:
 `400 VALIDATION_ERROR` ("invalid room id"), `403 FORBIDDEN` ("origin not allowed"),
@@ -755,34 +780,36 @@ and the failing check set to `"unavailable"`.
 
 ## Endpoint index
 
+"Auth" = the `access_token` cookie or `Authorization: Bearer`.
+
 | Method | Path | Auth |
 |---|---|---|
 | GET | `/health` | — |
 | POST | `/auth/register` | — |
 | POST | `/auth/login` | — |
-| POST | `/auth/refresh` | — |
-| POST | `/auth/logout` | — |
-| GET | `/auth/me` | Bearer |
+| POST | `/auth/refresh` | refresh cookie |
+| POST | `/auth/logout` | refresh cookie (optional) |
+| GET | `/auth/me` | Auth |
 | GET | `/auth/google` | — (browser) |
 | GET | `/auth/google/callback` | — (browser) |
 | GET | `/auth/github` | — (browser) |
 | GET | `/auth/github/callback` | — (browser) |
-| GET | `/profile` | Bearer |
-| PATCH | `/profile` | Bearer |
-| GET | `/rooms` | Bearer |
-| GET | `/rooms/{id}` | Bearer |
-| POST | `/rooms/{id}/join` | Bearer |
-| POST | `/rooms/{id}/leave` | Bearer |
-| GET | `/rooms/{id}/participants` | Bearer + in room |
-| GET | `/rooms/{id}/ws` | `?access_token=` |
-| POST | `/rooms/{id}/messages` | Bearer + in room |
-| GET | `/rooms/{id}/messages` | Bearer + in room |
-| POST | `/rooms/{id}/call/token` | Bearer + in room |
-| POST | `/invites` | Bearer |
+| GET | `/profile` | Auth |
+| PATCH | `/profile` | Auth |
+| GET | `/rooms` | Auth |
+| GET | `/rooms/{id}` | Auth |
+| POST | `/rooms/{id}/join` | Auth |
+| POST | `/rooms/{id}/leave` | Auth |
+| GET | `/rooms/{id}/participants` | Auth + in room |
+| GET | `/rooms/{id}/ws` | cookie (or `?access_token=`) + in room |
+| POST | `/rooms/{id}/messages` | Auth + in room |
+| GET | `/rooms/{id}/messages` | Auth + in room |
+| POST | `/rooms/{id}/call/token` | Auth + in room |
+| POST | `/invites` | Auth |
 | GET | `/invites/{code}` | — |
-| POST | `/rooms/{id}/tasks` | Bearer |
-| GET | `/tasks/me` | Bearer |
-| PATCH | `/tasks/{id}` | Bearer (owner) |
-| POST | `/tasks/{id}/start` | Bearer (owner, in room) |
-| POST | `/tasks/{id}/extend` | Bearer (owner) |
-| POST | `/tasks/{id}/no-extend` | Bearer (owner) |
+| POST | `/rooms/{id}/tasks` | Auth |
+| GET | `/tasks/me` | Auth |
+| PATCH | `/tasks/{id}` | Auth (owner) |
+| POST | `/tasks/{id}/start` | Auth (owner, in room) |
+| POST | `/tasks/{id}/extend` | Auth (owner) |
+| POST | `/tasks/{id}/no-extend` | Auth (owner) |
