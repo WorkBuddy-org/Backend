@@ -167,7 +167,7 @@ func (s *Service) promptedTask(ctx context.Context, taskID, userID uuid.UUID) (*
 }
 
 // endPrompt ends a prompting timer and removes the owner from the task's
-// room (left_reason 'kicked'): the hub sends kicked to their sockets, closes
+// room (left_reason 'kicked_no_extension'): the hub sends kicked to their sockets, closes
 // them and tells the room. With dueBy set, the prompt must have expired by
 // then. It returns nil when the timer was no longer prompting, so racing
 // actors never both act.
@@ -180,7 +180,7 @@ func (s *Service) endPrompt(ctx context.Context, taskID uuid.UUID, dueBy *time.T
 		return nil, err
 	}
 
-	if err := s.rooms.Kick(ctx, t.RoomID, t.UserID); err != nil && !errors.Is(err, room.ErrNotInRoom) {
+	if err := s.rooms.KickNoExtension(ctx, t.RoomID, t.UserID); err != nil && !errors.Is(err, room.ErrNotInRoom) {
 		slog.Error("failed to remove user after extension prompt", "task_id", t.ID, "room_id", t.RoomID, "error", err)
 	}
 	return t, nil

@@ -17,6 +17,7 @@ var (
 	ErrWeakPassword       = errors.New("password must be at least 8 characters")
 	ErrInvalidEmail       = errors.New("invalid email address")
 	ErrRateLimited        = errors.New("too many login attempts, try again later")
+	ErrRegisterLimited    = errors.New("too many registration attempts, try again later")
 )
 
 // RateLimitedError is ErrRateLimited with how long until the next attempt is

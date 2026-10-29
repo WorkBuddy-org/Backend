@@ -48,7 +48,7 @@ Statuses used across the API:
 | `403` | Authenticated, but not allowed (not the task owner, not in the room) |
 | `404` | Resource not found |
 | `409` | Conflict with the current state (timer already running, prompt expired, …) |
-| `429` | Rate limited (login attempts, chat messages). Always has a `Retry-After` header: whole seconds to wait. |
+| `429` | Rate limited (registration, login attempts, chat messages). Always has a `Retry-After` header: whole seconds to wait. |
 | `502` | OAuth provider failed |
 | `503` | A dependency or feature is not configured/available |
 
@@ -113,7 +113,15 @@ Request:
 
 Errors: `400 invalid email address`, `400 password must be at least 8 characters`,
 `400 invalid request body`, `409 email already registered with another provider`
-(the email is taken by any account).
+(the email is taken by any account),
+`429 too many registration attempts, try again later`: more than 5 requests
+from the same client IP within 10 minutes (`REGISTER_RATE_LIMIT` /
+`REGISTER_RATE_WINDOW`; the window starts at the first request). Every
+request counts, including failed ones. The `Retry-After` header gives the
+seconds until the window resets. If the server's Redis is unavailable,
+requests aren't limited. The client IP is the connection address, or the
+first `X-Forwarded-For` value when the server runs behind a proxy with
+`TRUSTED_PROXY_HEADER` set.
 
 ### `POST /auth/login`
 
@@ -317,7 +325,10 @@ chat, starting a task timer, and getting a call token.
 ```
 
 The participation's `left_at` and `left_reason` are *omitted when empty*
-(always, for an open participation).
+(always, for an open participation). `left_reason` is one of
+`left_voluntarily`, `kicked_no_extension` (declined or ignored the task
+extension prompt) or `kicked` (other removal by the server; nothing emits it
+today). `completed_no_extension` is reserved.
 
 Errors: `400 invalid room id`, `401`, `404 room not found`.
 
@@ -429,12 +440,14 @@ Task object:
 Create a task in a room. **Auth:** required. Being in the room is **not**
 required to create a task, only to start its timer.
 
-Request: `{ "text": "string" }`. Trimmed, must not be empty. No maximum
-length.
+Request: `{ "text": "string" }`. Trimmed, then 1–200 characters (Unicode
+code points, not bytes). Tasks have a single text field; there is no
+separate description.
 
 `201 Created` → task object (`timer_status: "idle"`).
 
 Errors: `400 invalid room id`, `400 text is required`,
+`400 text must be at most 200 characters`,
 `400 invalid request body`, `401`, `404 room not found`.
 
 ### `GET /tasks/me`
@@ -461,7 +474,7 @@ Edit or complete your own task. **Auth:** required (owner only).
 
 | Field | Type | Rules |
 |---|---|---|
-| `text` | string | Optional. Trimmed, must not be empty. |
+| `text` | string | Optional. Trimmed, then 1–200 characters, as on create. |
 | `completed` | bool | Optional. `true` completes (sets `completed_at` to now), `false` un-completes. |
 
 Absent (or `null`) fields are unchanged, but at least one must be present:
@@ -473,7 +486,8 @@ Completing a task whose timer is `running` or `prompting` ends the timer
 `200 OK` → task object.
 
 Errors: `400 invalid task id`, `400 no fields to update`,
-`400 text is required`, `400 invalid request body`, `401`,
+`400 text is required`, `400 text must be at most 200 characters`,
+`400 invalid request body`, `401`,
 `403 not the owner of this task`, `404 task not found`.
 
 There is no endpoint to delete a task.
@@ -524,8 +538,9 @@ Errors:
 Answer the extension prompt with "no". **Auth:** required (owner only). No body.
 
 The timer ends and the user is **removed from the room**, exactly as when the
-prompt times out: their sockets get `kicked`, the room gets `user_left`.
-They can join again later.
+prompt times out: their sockets get `kicked`, the room gets `user_left`, both
+with reason `kicked_no_extension`, and the participation is closed with
+`left_reason: "kicked_no_extension"`. They can join again later.
 
 `200 OK` → task object (`timer_status: "ended"`).
 
@@ -549,7 +564,8 @@ The full event sequence is in [ws-protocol.md](ws-protocol.md) (sections
    - `POST /tasks/{id}/extend` → `task_extended`, and the timer runs again
      (back to step 3 when it ends);
    - `POST /tasks/{id}/no-extend`, or no answer by the deadline → the timer
-     ends and the user is removed from the room (`kicked`).
+     ends and the user is removed from the room (`kicked` event, reason
+     `kicked_no_extension`).
 5. Completing the task (`PATCH /tasks/{id}` with `completed: true`) at any
    point ends the timer (`timer_ended`, reason `completed`).
 

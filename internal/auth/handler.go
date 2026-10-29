@@ -13,15 +13,23 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/workbuddy/backend/internal/platform/httpx"
+	"github.com/workbuddy/backend/internal/platform/ratelimit"
 	"github.com/workbuddy/backend/internal/user"
 )
 
 type Handler struct {
-	service *Service
+	service         *Service
+	registerLimiter *ratelimit.FixedWindow
 }
 
 func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
+}
+
+// SetRegisterLimiter limits POST /auth/register per client IP; nil (the
+// default) disables the limit.
+func (h *Handler) SetRegisterLimiter(l *ratelimit.FixedWindow) {
+	h.registerLimiter = l
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *Middleware) {
@@ -176,6 +184,10 @@ func (h *Handler) completeOAuth(w http.ResponseWriter, r *http.Request, provider
 }
 
 func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
+	if !h.allowRegister(w, r) {
+		return
+	}
+
 	var req registerRequest
 	if err := decodeJSON(r, &req); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid request body")
@@ -202,6 +214,30 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.JSON(w, http.StatusCreated, pair)
+}
+
+// allowRegister counts a registration request for the client IP and writes
+// a 429 with Retry-After when over the limit. Every request counts, valid or
+// not. If Redis fails the request is let through, like the login limiter.
+func (h *Handler) allowRegister(w http.ResponseWriter, r *http.Request) bool {
+	if h.registerLimiter == nil {
+		return true
+	}
+	allowed, retryAfter, err := h.registerLimiter.Allow(r.Context(), registerAttemptsKey(httpx.ClientIP(r)))
+	if err != nil {
+		slog.Warn("register rate limiter unavailable, allowing request", "error", err)
+		return true
+	}
+	if !allowed {
+		httpx.RetryAfter(w, retryAfter)
+		httpx.Error(w, http.StatusTooManyRequests, ErrRegisterLimited.Error())
+		return false
+	}
+	return true
+}
+
+func registerAttemptsKey(ip string) string {
+	return "register_attempts:" + ip
 }
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
