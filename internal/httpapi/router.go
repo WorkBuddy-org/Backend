@@ -48,7 +48,9 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 	r.Use(httpx.TrustedProxy(deps.TrustedProxyHeader))
 	r.Use(middleware.RequestID)
-	r.Use(middleware.Recoverer)
+	r.Use(httpx.Recoverer)
+	r.NotFound(httpx.NotFoundHandler)
+	r.MethodNotAllowed(httpx.MethodNotAllowedHandler)
 
 	r.Get("/health", healthHandler(deps.DB, deps.Redis))
 	deps.AuthHandler.RegisterRoutes(r, deps.AuthMW)

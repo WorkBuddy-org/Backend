@@ -1,9 +1,7 @@
 package profile
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"time"
 
@@ -64,17 +62,17 @@ type updateRequest struct {
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	u, err := h.service.Get(r.Context(), userID)
 	if err != nil {
-		status := http.StatusInternalServerError
 		if errors.Is(err, ErrUserNotFound) {
-			status = http.StatusNotFound
+			httpx.NotFound(w, err.Error())
+			return
 		}
-		httpx.Error(w, status, err.Error())
+		httpx.Internal(w, "get profile failed", err, "user_id", userID)
 		return
 	}
 
@@ -84,37 +82,47 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	var req updateRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 
 	u, err := h.service.Update(r.Context(), userID, Update(req))
 	if err != nil {
-		status := http.StatusInternalServerError
-		switch {
-		case errors.Is(err, ErrNoFields), errors.Is(err, ErrInvalidName), errors.Is(err, ErrRoleTooLong),
-			errors.Is(err, ErrStackTooLong), errors.Is(err, ErrInvalidTimezone):
-			status = http.StatusBadRequest
-		case errors.Is(err, ErrUserNotFound):
-			status = http.StatusNotFound
+		if fields, ok := validationFields(err); ok {
+			httpx.Validation(w, err.Error(), fields)
+			return
 		}
-		httpx.Error(w, status, err.Error())
+		if errors.Is(err, ErrUserNotFound) {
+			httpx.NotFound(w, err.Error())
+			return
+		}
+		httpx.Internal(w, "update profile failed", err, "user_id", userID)
 		return
 	}
 
 	httpx.JSON(w, http.StatusOK, toProfileDTO(u))
 }
 
-func decodeJSON(r *http.Request, dst any) error {
-	defer func() { _ = r.Body.Close() }()
-
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(dst)
+// validationFields maps a profile validation error to its per-field reason;
+// ok is false for errors that are not validation errors.
+func validationFields(err error) (httpx.Fields, bool) {
+	switch {
+	case errors.Is(err, ErrNoFields):
+		return nil, true
+	case errors.Is(err, ErrInvalidName):
+		return httpx.Fields{"name": httpx.FieldInvalidLength}, true
+	case errors.Is(err, ErrRoleTooLong):
+		return httpx.Fields{"role": httpx.FieldTooLong}, true
+	case errors.Is(err, ErrStackTooLong):
+		return httpx.Fields{"stack": httpx.FieldTooLong}, true
+	case errors.Is(err, ErrInvalidTimezone):
+		return httpx.Fields{"timezone": httpx.FieldInvalidValue}, true
+	}
+	return nil, false
 }

@@ -30,10 +30,11 @@ GET /rooms/{room_id}/ws?access_token={access_token}
 
 | Check | Failure |
 |---|---|
-| `room_id` is a UUID | `400 {"error":"invalid room id"}` |
-| `Origin` header allowed (see below) | `403 {"error":"origin not allowed"}` |
-| `access_token` present, valid signature, not expired | `401 {"error":"missing or invalid access token"}` |
-| User has an open participation in the room (room missing ⇒ none) | `403 {"error":"join the room before connecting"}` |
+| `room_id` is a UUID | `400 VALIDATION_ERROR` ("invalid room id") |
+| `Origin` header allowed (see below) | `403 FORBIDDEN` ("origin not allowed") |
+| `access_token` present with a valid signature | `401 UNAUTHORIZED` ("invalid access token") |
+| `access_token` not expired | `401 TOKEN_EXPIRED` ("access token expired") |
+| User has an open participation in the room (room missing ⇒ none) | `403 FORBIDDEN` ("join the room before connecting") |
 | Presence store reachable | upgrade succeeds, then the server closes with `1011` |
 
 Browsers do **not** expose the HTTP status of a failed handshake: the
@@ -364,21 +365,22 @@ send time.
 Text only (no files, images, edits, deletes or delivery/read statuses in the
 MVP). Both endpoints require `Authorization: Bearer …` and an **open
 participation** in the room (joined and not left/kicked); otherwise `403
-{"error":"join the room before using its chat"}`. A room that does not exist
+FORBIDDEN` ("join the room before using its chat"). A room that does not exist
 has no participants, so it also gets 403.
 
 **Send:** `POST /rooms/{room_id}/messages` with `{"text": "…"}`.
 
 - `text` is trimmed; after trimming it must be 1–2000 characters (Unicode
-  code points, not bytes). Empty → `400 {"error":"text is required"}`, longer
-  → `400 {"error":"text must be at most 2000 characters"}`. Unknown fields →
-  `400`.
+  code points, not bytes). Empty → `400 VALIDATION_ERROR` (`details.fields` =
+  `{"text": "REQUIRED"}`), longer → `400 VALIDATION_ERROR`
+  (`{"text": "TOO_LONG"}`). Unknown fields → `400 VALIDATION_ERROR`
+  (`{"<name>": "UNKNOWN_FIELD"}`).
 - `201` with the stored message:
   `{"id", "room_id", "user_id", "user_name", "text", "created_at"}`
   (`created_at` is RFC 3339 with the database's precision).
 - Rate limit: by default 10 messages per user per 10 seconds, counted across
   all rooms (`CHAT_RATE_LIMIT` / `CHAT_RATE_WINDOW`). Over the limit →
-  `429 {"error":"too many messages, slow down"}` with a `Retry-After` header
+  `429 RATE_LIMITED` ("too many messages, slow down") with a `Retry-After` header
   (whole seconds until the window resets). The message isn't stored or
   broadcast. Invalid messages get their `400` first and don't count.
 
@@ -388,11 +390,11 @@ has no participants, so it also gets 403.
   `{"items": [message, …], "next_cursor": "<message id>" | null}`. `items` is
   `[]` when empty, never `null`.
 - `limit`: default 50, values above 100 are capped to 100; `0`, negative or
-  non-integer → `400`.
+  non-integer → `400 VALIDATION_ERROR` (`{"limit": "INVALID_VALUE"}`).
 - `before`: omit for the newest page; to load older messages pass the
   previous response's `next_cursor`. `next_cursor` is `null` when there are no
   older messages. A `before` that is not the id of a message in this room →
-  `400 {"error":"before must be a message id from this room"}`.
+  `400 VALIDATION_ERROR` (`{"before": "INVALID_VALUE"}`).
 - Messages that arrive while paging do not shift the cursor; merge them from
   `chat_message` events (de-duplicate by `id`).
 

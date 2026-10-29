@@ -109,30 +109,29 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 func (h *Handler) connect(w http.ResponseWriter, r *http.Request) {
 	roomID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		httpx.InvalidPathID(w, "room")
 		return
 	}
 
 	if !h.originAllowed(r.Header.Get("Origin")) {
-		httpx.Error(w, http.StatusForbidden, "origin not allowed")
+		httpx.Forbidden(w, "origin not allowed")
 		return
 	}
 
-	userID, ok := h.authenticate(r)
-	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "missing or invalid access token")
+	userID, err := h.authenticate(r)
+	if err != nil {
+		auth.WriteTokenError(w, err)
 		return
 	}
 
 	ctx := r.Context()
 	inRoom, err := h.rooms.HasOpenParticipation(ctx, roomID, userID)
 	if err != nil {
-		slog.Error("websocket participation check failed", "room_id", roomID, "user_id", userID, "error", err)
-		httpx.Error(w, http.StatusInternalServerError, "internal error")
+		httpx.Internal(w, "websocket participation check failed", err, "room_id", roomID, "user_id", userID)
 		return
 	}
 	if !inRoom {
-		httpx.Error(w, http.StatusForbidden, "join the room before connecting")
+		httpx.Forbidden(w, "join the room before connecting")
 		return
 	}
 
@@ -161,20 +160,22 @@ func (h *Handler) connect(w http.ResponseWriter, r *http.Request) {
 	h.leave(c)
 }
 
-func (h *Handler) authenticate(r *http.Request) (uuid.UUID, bool) {
+// authenticate returns the user of the handshake's access token. Errors wrap
+// auth.ErrTokenExpired or auth.ErrInvalidToken for auth.WriteTokenError.
+func (h *Handler) authenticate(r *http.Request) (uuid.UUID, error) {
 	token := r.URL.Query().Get("access_token")
 	if token == "" {
-		return uuid.Nil, false
+		return uuid.Nil, auth.ErrInvalidToken
 	}
 	claims, err := h.tokens.ParseAccessToken(token)
 	if err != nil {
-		return uuid.Nil, false
+		return uuid.Nil, err
 	}
 	userID, err := uuid.Parse(claims.Subject)
 	if err != nil {
-		return uuid.Nil, false
+		return uuid.Nil, auth.ErrInvalidToken
 	}
-	return userID, true
+	return userID, nil
 }
 
 // join records presence, queues the snapshot as the connection's first

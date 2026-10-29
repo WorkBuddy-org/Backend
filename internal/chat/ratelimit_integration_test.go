@@ -49,10 +49,13 @@ func TestChatRateLimit(t *testing.T) {
 		t.Fatalf("expected Retry-After of 1..2 seconds, got %q", header.Get("Retry-After"))
 	}
 	var errBody struct {
-		Error string `json:"error"`
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	decode(t, body, &errBody)
-	if errBody.Error != "too many messages, slow down" {
+	if errBody.Error.Code != "RATE_LIMITED" || errBody.Error.Message != "too many messages, slow down" {
 		t.Fatalf("unexpected error body %s", body)
 	}
 	if n := e.countMessages(roomID); n != limit {

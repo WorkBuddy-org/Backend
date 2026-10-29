@@ -117,7 +117,7 @@ func TestPatchTaskRequiresFields(t *testing.T) {
 
 	for _, body := range []string{`{}`, `{"text":null,"completed":null}`} {
 		code, resp := e.do(http.MethodPatch, "/tasks/"+taskID, owner, body)
-		if code != http.StatusBadRequest || !strings.Contains(resp, `"error":"no fields to update"`) {
+		if code != http.StatusBadRequest || !strings.Contains(resp, `"code":"VALIDATION_ERROR","message":"no fields to update"`) {
 			t.Fatalf("PATCH %s: expected 400 no fields to update, got %d: %s", body, code, resp)
 		}
 	}

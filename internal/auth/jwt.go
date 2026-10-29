@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -52,6 +53,11 @@ func (m *TokenManager) ParseAccessToken(tokenString string) (*AccessClaims, erro
 		return m.secret, nil
 	})
 	if err != nil {
+		// jwt/v5 verifies the signature before the claims, so an expired
+		// result means the token is genuine but stale.
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, fmt.Errorf("%w: %v", ErrTokenExpired, err)
+		}
 		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
 

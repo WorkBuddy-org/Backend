@@ -153,11 +153,14 @@ func TestCallTokenNotConfigured(t *testing.T) {
 			t.Fatalf("expected 503 for config %+v, got %d: %s", cfg, code, body)
 		}
 		var resp struct {
-			Error string `json:"error"`
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
 		}
 		decode(t, body, &resp)
-		if resp.Error != "call service not configured" {
-			t.Fatalf("expected error %q, got %q", "call service not configured", resp.Error)
+		if resp.Error.Code != "SERVICE_UNAVAILABLE" || resp.Error.Message != "call service not configured" {
+			t.Fatalf("expected error %q, got %q", "call service not configured", resp.Error.Message)
 		}
 	}
 }
