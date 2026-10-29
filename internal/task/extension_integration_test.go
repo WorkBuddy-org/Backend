@@ -178,7 +178,7 @@ func TestExtensionTimeoutKicks(t *testing.T) {
 	}
 
 	e.clock.Advance(2 * time.Second)
-	e.waitForLeftReason(roomID, owner, "kicked")
+	e.waitForLeftReason(roomID, owner, "kicked_no_extension")
 	scheduler.stop()
 
 	if got := e.getTask(taskID); got.TimerStatus != task.TimerEnded || got.PromptDeadlineAt != nil {
@@ -215,8 +215,8 @@ func TestNoExtendKicks(t *testing.T) {
 	if got := decodeTask(t, body); got.TimerStatus != task.TimerEnded {
 		t.Fatalf("expected ended timer, got %+v", got)
 	}
-	if reason := e.participationLeftReason(roomID, owner); reason != "kicked" {
-		t.Fatalf("expected participation closed as kicked, got %q", reason)
+	if reason := e.participationLeftReason(roomID, owner); reason != "kicked_no_extension" {
+		t.Fatalf("expected participation closed as kicked_no_extension, got %q", reason)
 	}
 	e.expectNotIndexed(e.prefix+"prompts:due", taskID)
 
@@ -398,7 +398,7 @@ func (e *timerEnv) kickedParticipations(roomID, userID uuid.UUID) int {
 	var n int
 	err := e.db.QueryRow(context.Background(), `
 		SELECT count(*) FROM room_participations
-		WHERE room_id = $1 AND user_id = $2 AND left_reason = 'kicked'`, roomID, userID).Scan(&n)
+		WHERE room_id = $1 AND user_id = $2 AND left_reason = 'kicked_no_extension'`, roomID, userID).Scan(&n)
 	if err != nil {
 		e.t.Fatalf("count kicked participations: %v", err)
 	}

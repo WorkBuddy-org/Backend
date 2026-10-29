@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/workbuddy/backend/internal/room"
@@ -29,6 +30,21 @@ type TimerDeps struct {
 	// Extension left entirely zero defaults to DefaultExtensionPromptTimeout
 	// and DefaultExtensionMaxCount.
 	Extension ExtensionConfig
+}
+
+// MaxTextLength caps a task's text, in characters (runes) after trimming.
+const MaxTextLength = 200
+
+// normalizeText trims text and checks it is 1..MaxTextLength characters.
+func normalizeText(text string) (string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", ErrTextRequired
+	}
+	if utf8.RuneCountInString(text) > MaxTextLength {
+		return "", ErrTextTooLong
+	}
+	return text, nil
 }
 
 type Service struct {
@@ -66,9 +82,9 @@ func NewService(repo *Repository, rooms *room.Service, timers TimerDeps) *Servic
 // Create creates a task for userID in roomID. If the room has an active
 // session, the task is linked to it; otherwise session_id is left null.
 func (s *Service) Create(ctx context.Context, roomID, userID uuid.UUID, text string) (*Task, error) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil, ErrTextRequired
+	text, err := normalizeText(text)
+	if err != nil {
+		return nil, err
 	}
 
 	_, session, err := s.rooms.GetRoomDetail(ctx, roomID)
@@ -98,9 +114,9 @@ func (s *Service) Update(ctx context.Context, taskID, userID uuid.UUID, update U
 	}
 
 	if update.Text != nil {
-		trimmed := strings.TrimSpace(*update.Text)
-		if trimmed == "" {
-			return nil, ErrTextRequired
+		trimmed, err := normalizeText(*update.Text)
+		if err != nil {
+			return nil, err
 		}
 		update.Text = &trimmed
 	}

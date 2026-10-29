@@ -38,6 +38,9 @@ All settings come from environment variables. In development (`ENV` unset or
 | `EXTENSION_MAX_COUNT` | `3` | Maximum timer extensions per task. |
 | `CHAT_RATE_LIMIT` | `10` | Chat messages a user may send per `CHAT_RATE_WINDOW`, across all rooms; `0` disables the limit. |
 | `CHAT_RATE_WINDOW` | `10s` | Length of the chat rate-limit window (fixed window, kept in Redis). |
+| `REGISTER_RATE_LIMIT` | `5` | `POST /auth/register` requests one client IP may make per `REGISTER_RATE_WINDOW`; `0` disables the limit. |
+| `REGISTER_RATE_WINDOW` | `10m` | Length of the registration rate-limit window (fixed window, kept in Redis). |
+| `TRUSTED_PROXY_HEADER` | empty | Header whose first value is the client IP, e.g. `X-Forwarded-For`; empty uses the connection address. Set it only when the API is reachable solely through a proxy that overwrites the header, or clients can spoof their IP. |
 | `LIVEKIT_URL` | empty | LiveKit server URL returned to clients with a call token. |
 | `LIVEKIT_API_KEY` | empty | LiveKit API key; issuer of call tokens. |
 | `LIVEKIT_API_SECRET` | empty | LiveKit API secret that signs call tokens; never sent to clients. If any `LIVEKIT_*` is empty, `POST /rooms/{id}/call/token` returns 503. |
@@ -119,7 +122,7 @@ questions and neither is a cache of the other:
 | Answers | "Who is in the room right now?" | "Who was in the room, when, and for how long?" |
 | Lifetime | Ephemeral — reflects live connection state | Durable — one row per join, with `joined_at`/`left_at` |
 | Written on | Every join/leave/disconnect | Join (insert) and leave (update `left_at` + `left_reason`) |
-| Used for | Live presence indicators, real-time room state | Stats, presence history, distinguishing why someone left (`completed_no_extension` / `kicked` / `left_voluntarily`) |
+| Used for | Live presence indicators, real-time room state | Stats, presence history, distinguishing why someone left (`completed_no_extension` / `kicked_no_extension` / `kicked` / `left_voluntarily`) |
 
 In practice: a join opens both a Redis set entry and a `room_participations`
 row; a leave closes both. If the two ever disagree (e.g. after a crash), the

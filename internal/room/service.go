@@ -8,8 +8,9 @@ import (
 
 // Values of room_participations.left_reason.
 const (
-	LeftReasonVoluntary = "left_voluntarily"
-	LeftReasonKicked    = "kicked"
+	LeftReasonVoluntary         = "left_voluntarily"
+	LeftReasonKicked            = "kicked"
+	LeftReasonKickedNoExtension = "kicked_no_extension"
 )
 
 // LeaveListener is told after a user's participation in a room is closed, so
@@ -132,6 +133,16 @@ func (s *Service) Leave(ctx context.Context, roomID, userID uuid.UUID) error {
 // 'kicked' and notifies the listener. It returns ErrNotInRoom if the user had
 // already left.
 func (s *Service) Kick(ctx context.Context, roomID, userID uuid.UUID) error {
+	return s.remove(ctx, roomID, userID, LeftReasonKicked)
+}
+
+// KickNoExtension is Kick for a user who declined or ignored the task
+// extension prompt: left_reason is 'kicked_no_extension'.
+func (s *Service) KickNoExtension(ctx context.Context, roomID, userID uuid.UUID) error {
+	return s.remove(ctx, roomID, userID, LeftReasonKickedNoExtension)
+}
+
+func (s *Service) remove(ctx context.Context, roomID, userID uuid.UUID, reason string) error {
 	existing, err := s.repo.FindOpenParticipation(ctx, userID, roomID)
 	if err != nil {
 		return err
@@ -140,10 +151,10 @@ func (s *Service) Kick(ctx context.Context, roomID, userID uuid.UUID) error {
 		return ErrNotInRoom
 	}
 
-	if err := s.repo.CloseParticipation(ctx, existing.ID, LeftReasonKicked); err != nil {
+	if err := s.repo.CloseParticipation(ctx, existing.ID, reason); err != nil {
 		return err
 	}
-	s.notifyLeft(roomID, userID, LeftReasonKicked)
+	s.notifyLeft(roomID, userID, reason)
 	return nil
 }
 

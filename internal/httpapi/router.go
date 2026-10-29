@@ -37,11 +37,16 @@ type RouterDeps struct {
 	ChatHandler    *chat.Handler
 	WSHandler      *ws.Handler
 	CallHandler    *call.Handler
+
+	// TrustedProxyHeader, when set, names the header whose first value is
+	// used as the client IP (see httpx.TrustedProxy).
+	TrustedProxyHeader string
 }
 
 func NewRouter(deps RouterDeps) http.Handler {
 	r := chi.NewRouter()
 
+	r.Use(httpx.TrustedProxy(deps.TrustedProxyHeader))
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 

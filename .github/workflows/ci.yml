@@ -67,9 +67,26 @@ jobs:
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
-      - name: govulncheck
+      # Full report. Non-blocking: the known findings are in the Go standard
+      # library and need a Go upgrade (go.mod pins the toolchain).
+      - name: govulncheck (report)
         continue-on-error: true
         run: govulncheck ./...
+
+      # Blocking: fails if our code calls a vulnerable symbol in any module
+      # other than the standard library. Same "called" rule as the text
+      # report: a finding counts when its trace reaches a function.
+      - name: govulncheck (non-stdlib, blocking)
+        run: |
+          govulncheck -format json ./... > govulncheck.json
+          jq -r 'select(.finding != null and .finding.trace[0].function != null) | "\(.finding.trace[0].module)\t\(.finding.osv)"' govulncheck.json | sort -u > called.txt
+          grep -v '^stdlib[[:space:]]' called.txt > blocking.txt || true
+          if [ -s blocking.txt ]; then
+            echo "::error::govulncheck found called vulnerabilities outside the Go standard library:"
+            cat blocking.txt
+            exit 1
+          fi
+          echo "No called vulnerabilities outside the Go standard library ($(wc -l < called.txt) stdlib findings, see the report step)."
 
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
