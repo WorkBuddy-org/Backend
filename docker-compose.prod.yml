@@ -1,0 +1,99 @@
+# Production stack: Caddy (HTTPS) -> app, with Postgres and Redis on the
+# internal network only. All settings come from .env.prod (never committed):
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# --env-file feeds the ${...} values below; env_file passes the same file
+# to the app containers. See docs/deploy.md.
+name: workbuddy-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env.prod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env.prod}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: applies pending goose migrations with cmd/migrate, then exits.
+  # The app starts only after it succeeds. Other commands:
+  # `run --rm migrate status|version|down`.
+  migrate:
+    build: .
+    image: workbuddy-app:latest
+    entrypoint: ["/app/migrate"]
+    command: ["up"]
+    env_file: .env.prod
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  app:
+    build: .
+    image: workbuddy-app:latest
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      # The app is reachable only through Caddy, which sets X-Forwarded-For
+      # to the real client address.
+      TRUSTED_PROXY_HEADER: X-Forwarded-For
+    expose:
+      - "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env.prod}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

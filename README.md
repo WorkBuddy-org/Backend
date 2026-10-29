@@ -53,6 +53,9 @@ other reverse proxy in front of the API **must not log the `access_token` query
 parameter**. Log `$uri` instead of `$request_uri`/`$request`, or strip the
 parameter in a custom `log_format`. The server itself never logs it.
 
+For production, `docker-compose.prod.yml` ships a Caddy proxy that already
+does this; see [docs/deploy.md](docs/deploy.md).
+
 ## Redis Key Structure
 
 Live timer countdown state is **ephemeral** and lives only in Redis — it is never
