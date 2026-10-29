@@ -90,7 +90,7 @@ func TestUpdateProfileValidation(t *testing.T) {
 	}
 	for _, c := range invalid {
 		code, out := patch(c.body)
-		if code != http.StatusBadRequest || out["error"] != c.wantErr {
+		if code != http.StatusBadRequest || errorField(out, "code") != "VALIDATION_ERROR" || errorField(out, "message") != c.wantErr {
 			t.Fatalf("%s: expected 400 %q, got %d %v", c.name, c.wantErr, code, out)
 		}
 	}
@@ -124,4 +124,11 @@ func TestUpdateProfileValidation(t *testing.T) {
 			t.Fatalf("%s: expected %s %q, got %v", c.name, c.field, c.want, out[c.field])
 		}
 	}
+}
+
+// errorField returns a string field of the {"error": {...}} object in out.
+func errorField(out map[string]any, key string) string {
+	obj, _ := out["error"].(map[string]any)
+	s, _ := obj[key].(string)
+	return s
 }

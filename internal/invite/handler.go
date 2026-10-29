@@ -42,13 +42,13 @@ type validityResponse struct {
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	inv, err := h.service.Create(r.Context(), userID)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to create invite")
+		httpx.Internal(w, "create invite failed", err, "user_id", userID)
 		return
 	}
 
@@ -63,13 +63,13 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) checkValidity(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
 	if code == "" {
-		httpx.Error(w, http.StatusBadRequest, "invite code is required")
+		httpx.Validation(w, "invite code is required", httpx.Fields{"code": httpx.FieldRequired})
 		return
 	}
 
 	result, err := h.service.CheckValidity(r.Context(), code)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to check invite")
+		httpx.Internal(w, "check invite failed", err)
 		return
 	}
 

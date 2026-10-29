@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -119,6 +120,9 @@ func TestExtensionLimitReached(t *testing.T) {
 	code, body := e.do(http.MethodPost, "/tasks/"+taskID+"/extend", ownerToken, `{"minutes": 15}`)
 	if code != http.StatusConflict {
 		t.Fatalf("extend over the limit: expected 409, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, `"code":"EXTEND_LIMIT_REACHED"`) {
+		t.Fatalf("extend over the limit: expected EXTEND_LIMIT_REACHED, got %s", body)
 	}
 	got := e.getTask(taskID)
 	if got.ExtendedCount != 1 || got.ExtraMinutesUsed != 15 || got.TimerStatus != task.TimerPrompting {

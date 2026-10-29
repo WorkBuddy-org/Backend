@@ -1,10 +1,7 @@
 package task
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -86,32 +83,25 @@ type updateRequest struct {
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	roomID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		httpx.InvalidPathID(w, "room")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	var req createRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 
 	t, err := h.service.Create(r.Context(), roomID, userID, req.Text)
 	if err != nil {
-		status := http.StatusInternalServerError
-		switch {
-		case errors.Is(err, ErrTextRequired), errors.Is(err, ErrTextTooLong):
-			status = http.StatusBadRequest
-		case errors.Is(err, room.ErrRoomNotFound):
-			status = http.StatusNotFound
-		}
-		httpx.Error(w, status, err.Error())
+		writeError(w, err)
 		return
 	}
 
@@ -121,34 +111,25 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
 	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid task id")
+		httpx.InvalidPathID(w, "task")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	var req updateRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 
 	t, err := h.service.Update(r.Context(), taskID, userID, Update(req))
 	if err != nil {
-		status := http.StatusInternalServerError
-		switch {
-		case errors.Is(err, ErrTaskNotFound):
-			status = http.StatusNotFound
-		case errors.Is(err, ErrForbidden):
-			status = http.StatusForbidden
-		case errors.Is(err, ErrTextRequired), errors.Is(err, ErrTextTooLong), errors.Is(err, ErrNoFields):
-			status = http.StatusBadRequest
-		}
-		httpx.Error(w, status, err.Error())
+		writeError(w, err)
 		return
 	}
 
@@ -162,25 +143,25 @@ type startTimerRequest struct {
 func (h *Handler) startTimer(w http.ResponseWriter, r *http.Request) {
 	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid task id")
+		httpx.InvalidPathID(w, "task")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	var req startTimerRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 
 	t, err := h.service.StartTimer(r.Context(), taskID, userID, req.DurationMinutes)
 	if err != nil {
-		writeTimerError(w, err)
+		writeError(w, err)
 		return
 	}
 
@@ -194,25 +175,25 @@ type extendTimerRequest struct {
 func (h *Handler) extendTimer(w http.ResponseWriter, r *http.Request) {
 	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid task id")
+		httpx.InvalidPathID(w, "task")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	var req extendTimerRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 
 	t, err := h.service.ExtendTimer(r.Context(), taskID, userID, req.Minutes)
 	if err != nil {
-		writeTimerError(w, err)
+		writeError(w, err)
 		return
 	}
 
@@ -223,48 +204,57 @@ func (h *Handler) extendTimer(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) declineExtension(w http.ResponseWriter, r *http.Request) {
 	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid task id")
+		httpx.InvalidPathID(w, "task")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	t, err := h.service.DeclineExtension(r.Context(), taskID, userID)
 	if err != nil {
-		writeTimerError(w, err)
+		writeError(w, err)
 		return
 	}
 
 	httpx.JSON(w, http.StatusOK, toTaskDTO(t))
 }
 
-// writeTimerError maps timer errors to statuses; anything unknown is a 500
+// writeError maps task and timer errors to codes; anything unknown is a 500
 // without internal details.
-func writeTimerError(w http.ResponseWriter, err error) {
+func writeError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrInvalidDuration), errors.Is(err, ErrInvalidExtension):
-		httpx.Error(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrTaskNotFound):
-		httpx.Error(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrForbidden):
-		httpx.Error(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, ErrTaskCompleted), errors.Is(err, ErrNotInRoom), errors.Is(err, ErrTimerActive),
-		errors.Is(err, ErrNotPrompting), errors.Is(err, ErrPromptExpired), errors.Is(err, ErrExtensionLimit):
-		httpx.Error(w, http.StatusConflict, err.Error())
+	case errors.Is(err, ErrTextRequired):
+		httpx.Validation(w, err.Error(), httpx.Fields{"text": httpx.FieldRequired})
+	case errors.Is(err, ErrTextTooLong):
+		httpx.Validation(w, err.Error(), httpx.Fields{"text": httpx.FieldTooLong})
+	case errors.Is(err, ErrNoFields):
+		httpx.Validation(w, err.Error(), nil)
+	case errors.Is(err, ErrInvalidDuration):
+		httpx.Validation(w, err.Error(), httpx.Fields{"duration_minutes": httpx.FieldInvalidValue})
+	case errors.Is(err, ErrInvalidExtension):
+		httpx.Validation(w, err.Error(), httpx.Fields{"minutes": httpx.FieldInvalidValue})
+	case errors.Is(err, ErrTaskNotFound), errors.Is(err, room.ErrRoomNotFound):
+		httpx.NotFound(w, err.Error())
+	case errors.Is(err, ErrForbidden), errors.Is(err, ErrNotInRoom):
+		httpx.Forbidden(w, err.Error())
+	case errors.Is(err, ErrExtensionLimit):
+		httpx.Error(w, http.StatusConflict, httpx.CodeExtendLimitReached, err.Error())
+	case errors.Is(err, ErrTaskCompleted), errors.Is(err, ErrTimerActive),
+		errors.Is(err, ErrNotPrompting), errors.Is(err, ErrPromptExpired):
+		httpx.Error(w, http.StatusConflict, httpx.CodeConflict, err.Error())
 	default:
-		slog.Error("task timer request failed", "error", err)
-		httpx.Error(w, http.StatusInternalServerError, "internal error")
+		httpx.Internal(w, "task request failed", err)
 	}
 }
 
 func (h *Handler) listMine(w http.ResponseWriter, r *http.Request) {
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
@@ -275,7 +265,7 @@ func (h *Handler) listMine(w http.ResponseWriter, r *http.Request) {
 
 	tasks, err := h.service.ListByUser(r.Context(), userID, limit, offset)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to list tasks")
+		httpx.Internal(w, "list tasks failed", err, "user_id", userID)
 		return
 	}
 
@@ -302,7 +292,7 @@ func parsePage(w http.ResponseWriter, r *http.Request) (limit, offset int, ok bo
 	if raw := query.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 {
-			httpx.Error(w, http.StatusBadRequest, "limit must be a positive integer")
+			httpx.Validation(w, "limit must be a positive integer", httpx.Fields{"limit": httpx.FieldInvalidValue})
 			return 0, 0, false
 		}
 		limit = min(n, MaxListLimit)
@@ -311,19 +301,11 @@ func parsePage(w http.ResponseWriter, r *http.Request) (limit, offset int, ok bo
 	if raw := query.Get("offset"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 0 {
-			httpx.Error(w, http.StatusBadRequest, "offset must be a non-negative integer")
+			httpx.Validation(w, "offset must be a non-negative integer", httpx.Fields{"offset": httpx.FieldInvalidValue})
 			return 0, 0, false
 		}
 		offset = n
 	}
 
 	return limit, offset, true
-}
-
-func decodeJSON(r *http.Request, dst any) error {
-	defer func() { _ = r.Body.Close() }()
-
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(dst)
 }

@@ -96,7 +96,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 
 	rooms, err := h.service.ListRooms(r.Context(), filter)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to list rooms")
+		httpx.Internal(w, "list rooms failed", err)
 		return
 	}
 
@@ -110,17 +110,13 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		httpx.InvalidPathID(w, "room")
 		return
 	}
 
 	rm, _, err := h.service.GetRoomDetail(r.Context(), id)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, ErrRoomNotFound) {
-			status = http.StatusNotFound
-		}
-		httpx.Error(w, status, err.Error())
+		writeError(w, err, "get room failed", "room_id", id)
 		return
 	}
 
@@ -130,23 +126,19 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		httpx.InvalidPathID(w, "room")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	result, err := h.service.Join(r.Context(), id, userID)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, ErrRoomNotFound) {
-			status = http.StatusNotFound
-		}
-		httpx.Error(w, status, err.Error())
+		writeError(w, err, "join room failed", "room_id", id, "user_id", userID)
 		return
 	}
 
@@ -159,22 +151,18 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) leave(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		httpx.InvalidPathID(w, "room")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	if err := h.service.Leave(r.Context(), id, userID); err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, ErrNotInRoom) {
-			status = http.StatusNotFound
-		}
-		httpx.Error(w, status, err.Error())
+		writeError(w, err, "leave room failed", "room_id", id, "user_id", userID)
 		return
 	}
 
@@ -184,23 +172,19 @@ func (h *Handler) leave(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) participants(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		httpx.InvalidPathID(w, "room")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	participants, err := h.service.ListParticipants(r.Context(), id, userID)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, ErrNotMember) {
-			status = http.StatusForbidden
-		}
-		httpx.Error(w, status, err.Error())
+		writeError(w, err, "list participants failed", "room_id", id, "user_id", userID)
 		return
 	}
 
@@ -209,4 +193,17 @@ func (h *Handler) participants(w http.ResponseWriter, r *http.Request) {
 		dtos[i] = participantDTO(p)
 	}
 	httpx.JSON(w, http.StatusOK, dtos)
+}
+
+// writeError maps room errors to codes; anything unknown is logged with args
+// and answered with a generic 500.
+func writeError(w http.ResponseWriter, err error, logMsg string, args ...any) {
+	switch {
+	case errors.Is(err, ErrRoomNotFound), errors.Is(err, ErrNotInRoom):
+		httpx.NotFound(w, err.Error())
+	case errors.Is(err, ErrNotMember):
+		httpx.Forbidden(w, err.Error())
+	default:
+		httpx.Internal(w, logMsg, err, args...)
+	}
 }

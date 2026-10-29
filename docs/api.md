@@ -14,13 +14,18 @@ below are relative to that root.
 **Content type.** Request and response bodies are JSON
 (`Content-Type: application/json`). Request bodies are strict:
 
-- an **unknown field** is rejected with `400 invalid request body`;
+- an **unknown field** is rejected with `400 VALIDATION_ERROR`,
+  `details.fields` = `{"<name>": "UNKNOWN_FIELD"}`;
+- a field of the wrong JSON type is `400 VALIDATION_ERROR`,
+  `{"<name>": "INVALID_TYPE"}`;
 - bodies are read up to 1 MiB;
-- a malformed or missing JSON body on an endpoint that expects one is a
-  `400 invalid request body`.
+- a missing body on an endpoint that expects one is `400 VALIDATION_ERROR`
+  ("request body is required"); malformed JSON is `400 VALIDATION_ERROR`
+  ("invalid request body") with no details.
 
-**IDs** are UUID strings. A path id that isn't a valid UUID returns `400`
-(`invalid room id`, `invalid task id`).
+**IDs** are UUID strings. A path id that isn't a valid UUID returns
+`400 VALIDATION_ERROR` (`invalid room id` / `invalid task id`) with
+`details.fields` = `{"id": "INVALID_FORMAT"}`.
 
 **Timestamps** are RFC 3339 strings in UTC with fractional seconds, e.g.
 `"2026-10-22T14:03:11.482913Z"`.
@@ -30,27 +35,65 @@ JSON instead of being `null`.
 
 ### Error format
 
-Every error response, on every endpoint, has the same body:
+Every error response, on every endpoint (including unknown routes and
+panics), has the same body:
 
 ```json
-{ "error": "human-readable message" }
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid email address",
+    "details": { "fields": { "email": "INVALID_FORMAT" } }
+  }
+}
 ```
 
-The message is safe to log, but don't match on it in code. Use the HTTP status.
-Unexpected failures return `500` with a generic message.
+- `code`: stable, machine-readable. **Branch on this.**
+- `message`: English debug text. Safe to log; may change, don't match on it.
+- `details`: optional, omitted when empty. Today only `VALIDATION_ERROR`
+  uses it, as `details.fields`: a map from request field (body field, query
+  parameter, or `id` for the path id) to a reason.
 
-Statuses used across the API:
+Field reasons in `details.fields`:
 
-| Status | Meaning |
+| Reason | Meaning |
 |---|---|
-| `400` | Invalid path id, query parameter or body |
-| `401` | Missing/invalid `Authorization` header, invalid or expired access token, bad credentials |
-| `403` | Authenticated, but not allowed (not the task owner, not in the room) |
-| `404` | Resource not found |
-| `409` | Conflict with the current state (timer already running, prompt expired, …) |
-| `429` | Rate limited (registration, login attempts, chat messages). Always has a `Retry-After` header: whole seconds to wait. |
-| `502` | OAuth provider failed |
-| `503` | A dependency or feature is not configured/available |
+| `REQUIRED` | Missing or empty (after trimming) |
+| `INVALID_FORMAT` | Wrong shape, e.g. not an email, not a UUID |
+| `INVALID_VALUE` | Outside the allowed values/range (enums such as `duration_minutes`, bad `limit`) |
+| `INVALID_TYPE` | Wrong JSON type |
+| `INVALID_LENGTH` | Length outside min..max |
+| `TOO_SHORT` | Below the minimum length |
+| `TOO_LONG` | Above the maximum length |
+| `UNKNOWN_FIELD` | Field not accepted by this endpoint |
+
+Error codes:
+
+| Code | Status | When |
+|---|---|---|
+| `VALIDATION_ERROR` | 400 | Malformed JSON, unknown fields, wrong types, empty/invalid fields, values outside enums, empty `PATCH` body, bad path id or query parameter |
+| `UNAUTHORIZED` | 401 | Access token missing, malformed or with a bad signature; refresh token unknown/expired/revoked |
+| `TOKEN_EXPIRED` | 401 | Access token present, signature valid, but expired: refresh and retry |
+| `INVALID_CREDENTIALS` | 401 | Login with a wrong email/password (or an OAuth-only account) |
+| `FORBIDDEN` | 403 | Authenticated but not allowed: not a room participant, not the task owner, WebSocket origin not allowed, OAuth denied / bad OAuth state |
+| `NOT_FOUND` | 404 | Resource (or route) does not exist |
+| `METHOD_NOT_ALLOWED` | 405 | Route exists but not for this method |
+| `EMAIL_EXISTS` | 409 | Register (or OAuth sign-in) with an email that is already taken |
+| `EXTEND_LIMIT_REACHED` | 409 | `POST /tasks/{id}/extend` when the task has no extensions left |
+| `CONFLICT` | 409 | Other conflicts with the current state: task completed, a timer already running, no extension prompt pending, prompt expired |
+| `ROOM_FULL` | 409 | Reserved, not returned yet |
+| `ALREADY_RESERVED` | 409 | Reserved, not returned yet |
+| `ROOM_ENDED` | 409 | Reserved, not returned yet |
+| `INVITE_EXPIRED` | — | Reserved, not returned yet (invites have no expiry; `GET /invites/{code}` reports validity in a `200` body) |
+| `INVITE_INVALID` | — | Reserved, not returned yet (see above) |
+| `FILE_TOO_LARGE` | — | Reserved for uploads, not returned yet |
+| `UNSUPPORTED_FILE_TYPE` | — | Reserved for uploads, not returned yet |
+| `RATE_LIMITED` | 429 | Register, login or chat limiter tripped. Always has a `Retry-After` header: whole seconds to wait |
+| `SERVICE_UNAVAILABLE` | 503 | A feature is not configured on the server (OAuth provider, LiveKit calls) |
+| `INTERNAL` | 500 / 502 | Unexpected server failure (generic message, details are only in the server log); `502` when an OAuth provider call fails |
+
+`GET /health` is not an error endpoint: its `503` uses the health body
+below, not this format.
 
 ## Authentication
 
@@ -60,9 +103,11 @@ Protected endpoints need an access token in the `Authorization` header:
 Authorization: Bearer <access_token>
 ```
 
-Without a valid header the response is `401` with
-`missing or invalid authorization header` or `invalid access token` (also
-when it's expired).
+Without a valid header the response is `401 UNAUTHORIZED`
+("missing or invalid authorization header" / "invalid access token"). A
+genuine but expired token gets `401 TOKEN_EXPIRED` instead: refresh, then
+retry. Every protected endpoint below can return these two; they are written
+as just `401`.
 
 The WebSocket endpoint can't use headers. It takes the token as
 `?access_token=` instead (see [ws-protocol.md](ws-protocol.md)).
@@ -88,11 +133,11 @@ Register, login, refresh and the OAuth callback (JSON mode) return:
 ### Refresh flow
 
 1. Call protected endpoints with the access token.
-2. On `401` (or shortly before `expires_in` runs out), call
+2. On `401 TOKEN_EXPIRED` (or shortly before `expires_in` runs out), call
    `POST /auth/refresh` with the refresh token.
 3. The response is a **new pair**. The old refresh token is revoked
    (rotation), so always replace both tokens. Reusing an old refresh token
-   gives `401 token revoked`.
+   gives `401 UNAUTHORIZED` ("token revoked").
 4. If refresh fails with `401`, send the user to login.
 
 ---
@@ -111,10 +156,10 @@ Request:
 
 `201 Created` → [token pair](#token-pair).
 
-Errors: `400 invalid email address`, `400 password must be at least 8 characters`,
-`400 invalid request body`, `409 email already registered with another provider`
+Errors: `400 VALIDATION_ERROR` ("invalid email address") (`{"email": "INVALID_FORMAT"}`), `400 VALIDATION_ERROR` ("password must be at least 8 characters") (`{"password": "TOO_SHORT"}`),
+`400 VALIDATION_ERROR` ("invalid request body"), `409 EMAIL_EXISTS` ("email already registered with another provider")
 (the email is taken by any account),
-`429 too many registration attempts, try again later`: more than 5 requests
+`429 RATE_LIMITED` ("too many registration attempts, try again later"): more than 5 requests
 from the same client IP within 10 minutes (`REGISTER_RATE_LIMIT` /
 `REGISTER_RATE_WINDOW`; the window starts at the first request). Every
 request counts, including failed ones. The `Retry-After` header gives the
@@ -132,14 +177,14 @@ Request: `{ "email": "string", "password": "string" }`
 `200 OK` → [token pair](#token-pair).
 
 Errors:
-- `401 invalid email or password`: unknown email, OAuth-only account or wrong
+- `401 INVALID_CREDENTIALS` ("invalid email or password"): unknown email, OAuth-only account or wrong
   password (deliberately indistinguishable).
-- `429 too many login attempts, try again later`: more than 5 attempts for
+- `429 RATE_LIMITED` ("too many login attempts, try again later"): more than 5 attempts for
   the same email within 15 minutes (the window starts at the first attempt).
   The `Retry-After` header gives the seconds until the window resets. A
   successful login resets the counter. If the server's Redis is unavailable,
   attempts aren't limited (same as chat).
-- `400 invalid request body`.
+- `400 VALIDATION_ERROR` ("invalid request body").
 
 ### `POST /auth/refresh`
 
@@ -147,8 +192,8 @@ Errors:
 
 `200 OK` → a new [token pair](#token-pair). The submitted refresh token is revoked.
 
-Errors: `400 refresh_token is required`, `401 invalid token` (unknown),
-`401 token expired`, `401 token revoked`.
+Errors: `400 VALIDATION_ERROR` ("refresh_token is required") (`{"refresh_token": "REQUIRED"}`), `401 UNAUTHORIZED` ("invalid token") (unknown),
+`401 UNAUTHORIZED` ("token expired"), `401 UNAUTHORIZED` ("token revoked").
 
 ### `POST /auth/logout`
 
@@ -159,7 +204,7 @@ Request: `{ "refresh_token": "string" }`
 
 `204 No Content`.
 
-Errors: `400 refresh_token is required`, `401 invalid token`.
+Errors: `400 VALIDATION_ERROR` ("refresh_token is required") (`{"refresh_token": "REQUIRED"}`), `401 UNAUTHORIZED` ("invalid token").
 
 ### `GET /auth/me`
 
@@ -171,7 +216,7 @@ Errors: `400 refresh_token is required`, `401 invalid token`.
 { "id": "6f1c…", "email": "ada@example.com", "name": "Ada" }
 ```
 
-Errors: `401`, `404 user not found`.
+Errors: `401`, `404 NOT_FOUND` ("user not found").
 
 ### OAuth: Google and GitHub
 
@@ -186,7 +231,7 @@ Errors: `401`, `404 user not found`.
    `/auth/google` or `/auth/github`. The server sets a short-lived state
    cookie (10 min, `HttpOnly`, `Secure`, `SameSite=Lax`) and answers
    `302` to the provider. If that provider isn't configured on the server:
-   `503 oauth provider not configured`.
+   `503 SERVICE_UNAVAILABLE` ("oauth provider not configured").
 2. **Callback**: the provider redirects back to `…/callback?code=…&state=…`
    (this URL is configured on the server via `GOOGLE_REDIRECT_URL` /
    `GITHUB_REDIRECT_URL`). The server finds or creates the user and issues a
@@ -199,12 +244,12 @@ Errors: `401`, `404 user not found`.
    - if the request has `Accept: application/json`, it answers `200` with the
      token pair instead of redirecting.
 
-Callback errors (JSON error body): `400 oauth authorization denied` (user
-cancelled), `400 invalid oauth state` (missing or mismatched state cookie),
-`400 missing authorization code`, `409 email already registered with another provider`
+Callback errors (JSON error body): `403 FORBIDDEN` ("oauth authorization denied") (user
+cancelled), `403 FORBIDDEN` ("invalid oauth state") (missing or mismatched state cookie),
+`400 VALIDATION_ERROR` ("missing authorization code") (`{"code": "REQUIRED"}`), `409 EMAIL_EXISTS` ("email already registered with another provider")
 (the email belongs to an account from a different provider or to an
-email+password account), `502 oauth token exchange failed`,
-`502 failed to fetch oauth profile`, `503 oauth provider not configured`.
+email+password account), `502 INTERNAL` ("oauth token exchange failed"),
+`502 INTERNAL` ("failed to fetch oauth profile"), `503 SERVICE_UNAVAILABLE` ("oauth provider not configured").
 
 ## Profile
 
@@ -229,7 +274,7 @@ email+password account), `502 oauth token exchange failed`,
 - `avatar_status`: `"none"`, `"pending"` or `"ready"`. There is no avatar
   upload endpoint yet, so it's always `"none"` for now.
 
-Errors: `401`, `404 user not found`.
+Errors: `401`, `404 NOT_FOUND` ("user not found").
 
 ### `PATCH /profile`
 
@@ -247,11 +292,14 @@ comes back as `""`. If any field is invalid, nothing is saved.
 
 `200 OK` → the full profile (same shape as `GET /profile`).
 
-Errors (all `400` unless noted): `no fields to update` (none of the four
-fields present), `name must be 1-100 characters`,
-`role must be at most 100 characters`, `stack must be at most 200 characters`,
-`timezone must be a valid IANA time zone name, e.g. Europe/Berlin`,
-`invalid request body`; `401`; `404 user not found`.
+Errors, all `400 VALIDATION_ERROR` unless noted (`details.fields` in brackets):
+"no fields to update" (none of the four fields present; no details),
+"name must be 1-100 characters" (`{"name": "INVALID_LENGTH"}`),
+"role must be at most 100 characters" (`{"role": "TOO_LONG"}`),
+"stack must be at most 200 characters" (`{"stack": "TOO_LONG"}`),
+"timezone must be a valid IANA time zone name, e.g. Europe/Berlin"
+(`{"timezone": "INVALID_VALUE"}`), body errors (see Conventions); `401`;
+`404 NOT_FOUND` ("user not found").
 
 ## Rooms
 
@@ -297,7 +345,7 @@ Errors: `401`.
 
 Rooms have no sessions: timers are per task (see [Timer flow](#timer-flow)).
 
-Errors: `400 invalid room id`, `401`, `404 room not found`.
+Errors: `400 VALIDATION_ERROR` ("invalid room id"), `401`, `404 NOT_FOUND` ("room not found").
 
 ### `POST /rooms/{id}/join`
 
@@ -330,7 +378,7 @@ The participation's `left_at` and `left_reason` are *omitted when empty*
 extension prompt) or `kicked` (other removal by the server; nothing emits it
 today). `completed_no_extension` is reserved.
 
-Errors: `400 invalid room id`, `401`, `404 room not found`.
+Errors: `400 VALIDATION_ERROR` ("invalid room id"), `401`, `404 NOT_FOUND` ("room not found").
 
 ### `POST /rooms/{id}/leave`
 
@@ -339,7 +387,7 @@ Leave a room. **Auth:** required. No body.
 `204 No Content`. The user's room WebSockets are then closed and the room gets
 a `user_left` event.
 
-Errors: `400 invalid room id`, `401`, `404 not currently in this room`.
+Errors: `400 VALIDATION_ERROR` ("invalid room id"), `401`, `404 NOT_FOUND` ("not currently in this room").
 
 ### `GET /rooms/{id}/participants`
 
@@ -360,8 +408,8 @@ left or removed). **Auth:** required, and the caller must be in the room too.
   `user_left`; see [ws-protocol.md](ws-protocol.md)).
 - No avatar field yet: users have no avatar URL.
 
-Errors: `400 invalid room id`, `401`,
-`403 join the room to see its participants` (caller not in the room, or the
+Errors: `400 VALIDATION_ERROR` ("invalid room id"), `401`,
+`403 FORBIDDEN` ("join the room to see its participants") (caller not in the room, or the
 room doesn't exist).
 
 ## Invites
@@ -386,7 +434,7 @@ them, and checking a code never marks it as used.
 
 `code` is 10 characters from an alphabet without look-alikes (no `0 O 1 l I`).
 
-Errors: `401`, `500 failed to create invite`.
+Errors: `401`, `500 INTERNAL`.
 
 ### `GET /invites/{code}`
 
@@ -446,9 +494,9 @@ separate description.
 
 `201 Created` → task object (`timer_status: "idle"`).
 
-Errors: `400 invalid room id`, `400 text is required`,
-`400 text must be at most 200 characters`,
-`400 invalid request body`, `401`, `404 room not found`.
+Errors: `400 VALIDATION_ERROR` ("invalid room id"), `400 VALIDATION_ERROR` ("text is required") (`{"text": "REQUIRED"}`),
+`400 VALIDATION_ERROR` ("text must be at most 200 characters") (`{"text": "TOO_LONG"}`),
+`400 VALIDATION_ERROR` ("invalid request body"), `401`, `404 NOT_FOUND` ("room not found").
 
 ### `GET /tasks/me`
 
@@ -465,8 +513,8 @@ There is no total count: a page shorter than `limit` is the last one. To load
 more, request `?offset=<items loaded so far>`. Tasks created meanwhile shift
 the offsets, so de-duplicate by `id`.
 
-Errors: `400 limit must be a positive integer`,
-`400 offset must be a non-negative integer`, `401`.
+Errors: `400 VALIDATION_ERROR` ("limit must be a positive integer") (`{"limit": "INVALID_VALUE"}`),
+`400 VALIDATION_ERROR` ("offset must be a non-negative integer") (`{"offset": "INVALID_VALUE"}`), `401`.
 
 ### `PATCH /tasks/{id}`
 
@@ -478,17 +526,17 @@ Edit or complete your own task. **Auth:** required (owner only).
 | `completed` | bool | Optional. `true` completes (sets `completed_at` to now), `false` un-completes. |
 
 Absent (or `null`) fields are unchanged, but at least one must be present:
-`{}` is a `400 no fields to update`, the same as `PATCH /profile`.
+`{}` is a `400 VALIDATION_ERROR` ("no fields to update"), the same as `PATCH /profile`.
 Completing a task whose timer is `running` or `prompting` ends the timer
 (`timer_status: "ended"`), and the room receives `timer_ended` with reason
 `completed`.
 
 `200 OK` → task object.
 
-Errors: `400 invalid task id`, `400 no fields to update`,
-`400 text is required`, `400 text must be at most 200 characters`,
-`400 invalid request body`, `401`,
-`403 not the owner of this task`, `404 task not found`.
+Errors: `400 VALIDATION_ERROR` ("invalid task id"), `400 VALIDATION_ERROR` ("no fields to update"),
+`400 VALIDATION_ERROR` ("text is required") (`{"text": "REQUIRED"}`), `400 VALIDATION_ERROR` ("text must be at most 200 characters") (`{"text": "TOO_LONG"}`),
+`400 VALIDATION_ERROR` ("invalid request body"), `401`,
+`403 FORBIDDEN` ("not the owner of this task"), `404 NOT_FOUND` ("task not found").
 
 There is no endpoint to delete a task.
 
@@ -507,12 +555,12 @@ started again.
 `timer_started`.
 
 Errors:
-- `400 duration_minutes must be one of 25, 50, 90`, `400 invalid request body`,
-  `400 invalid task id`
-- `401`, `403 not the owner of this task`, `404 task not found`
-- `409 task is already completed`
-- `409 join the task's room before starting a timer`
-- `409 a timer is already running for this user`
+- `400 VALIDATION_ERROR` ("duration_minutes must be one of 25, 50, 90") (`{"duration_minutes": "INVALID_VALUE"}`), `400 VALIDATION_ERROR` ("invalid request body"),
+  `400 VALIDATION_ERROR` ("invalid task id")
+- `401`, `403 FORBIDDEN` ("not the owner of this task"), `404 NOT_FOUND` ("task not found")
+- `409 CONFLICT` ("task is already completed")
+- `403 FORBIDDEN` ("join the task's room before starting a timer")
+- `409 CONFLICT` ("a timer is already running for this user")
 
 ### `POST /tasks/{id}/extend`
 
@@ -527,11 +575,11 @@ Only valid while `timer_status` is `"prompting"` and before
 incremented). The room receives `task_extended`.
 
 Errors:
-- `400 minutes must be one of 15, 30`, `400 invalid request body`, `400 invalid task id`
-- `401`, `403 not the owner of this task`, `404 task not found`
-- `409 the task's timer is not waiting for an extension answer`
-- `409 the extension prompt was already answered or has expired`
-- `409 extension limit reached for this task`
+- `400 VALIDATION_ERROR` ("minutes must be one of 15, 30") (`{"minutes": "INVALID_VALUE"}`), `400 VALIDATION_ERROR` ("invalid request body"), `400 VALIDATION_ERROR` ("invalid task id")
+- `401`, `403 FORBIDDEN` ("not the owner of this task"), `404 NOT_FOUND` ("task not found")
+- `409 CONFLICT` ("the task's timer is not waiting for an extension answer")
+- `409 CONFLICT` ("the extension prompt was already answered or has expired")
+- `409 EXTEND_LIMIT_REACHED` ("extension limit reached for this task")
 
 ### `POST /tasks/{id}/no-extend`
 
@@ -544,10 +592,10 @@ with reason `kicked_no_extension`, and the participation is closed with
 
 `200 OK` → task object (`timer_status: "ended"`).
 
-Errors: `400 invalid task id`, `401`, `403 not the owner of this task`,
-`404 task not found`,
-`409 the task's timer is not waiting for an extension answer`,
-`409 the extension prompt was already answered or has expired`.
+Errors: `400 VALIDATION_ERROR` ("invalid task id"), `401`, `403 FORBIDDEN` ("not the owner of this task"),
+`404 NOT_FOUND` ("task not found"),
+`409 CONFLICT` ("the task's timer is not waiting for an extension answer"),
+`409 CONFLICT` ("the extension prompt was already answered or has expired").
 
 ## Timer flow
 
@@ -613,11 +661,11 @@ then the length must be 1–2000 characters (Unicode code points).
 `201 Created` → message object. The same message is broadcast to the room as
 `chat_message` (including the sender's own sockets, so de-duplicate by `id`).
 
-Errors: `400 invalid room id`, `400 text is required` (empty or only
-whitespace), `400 text must be at most 2000 characters`,
-`400 invalid request body`, `401`,
-`403 join the room before using its chat` (not in the room, or the room
-doesn't exist), `429 too many messages, slow down`: more than
+Errors: `400 VALIDATION_ERROR` ("invalid room id"), `400 VALIDATION_ERROR` ("text is required") (`{"text": "REQUIRED"}`) (empty or only
+whitespace), `400 VALIDATION_ERROR` ("text must be at most 2000 characters") (`{"text": "TOO_LONG"}`),
+`400 VALIDATION_ERROR` ("invalid request body"), `401`,
+`403 FORBIDDEN` ("join the room before using its chat") (not in the room, or the room
+doesn't exist), `429 RATE_LIMITED` ("too many messages, slow down"): more than
 `CHAT_RATE_LIMIT` (default 10) messages from this user within
 `CHAT_RATE_WINDOW` (default 10 s), across all rooms. The `Retry-After`
 header gives the seconds to wait. Rejected messages aren't stored or
@@ -648,9 +696,9 @@ History, newest first, with cursor pagination. **Auth:** required, in the room.
   `?before=<next_cursor>` until `next_cursor` is `null`. New messages arrive
   via `chat_message` on the WebSocket.
 
-Errors: `400 invalid room id`, `400 limit must be a positive integer`,
-`400 before must be a message id from this room` (bad UUID, unknown id or a
-message from another room), `401`, `403 join the room before using its chat`.
+Errors: `400 VALIDATION_ERROR` ("invalid room id"), `400 VALIDATION_ERROR` ("limit must be a positive integer") (`{"limit": "INVALID_VALUE"}`),
+`400 VALIDATION_ERROR` ("before must be a message id from this room") (`{"before": "INVALID_VALUE"}`) (bad UUID, unknown id or a
+message from another room), `401`, `403 FORBIDDEN` ("join the room before using its chat").
 
 ## Calls
 
@@ -676,18 +724,19 @@ Pass both to the LiveKit client SDK (`room.connect(url, token)`). The token:
 
 Request a new token for every connection attempt and don't cache it.
 
-Errors: `400 invalid room id`, `401`,
-`403 join the room before joining its call` (not in the room or unknown room),
-`503 call service not configured` (the server has no LiveKit settings).
+Errors: `400 VALIDATION_ERROR` ("invalid room id"), `401`,
+`403 FORBIDDEN` ("join the room before joining its call") (not in the room or unknown room),
+`503 SERVICE_UNAVAILABLE` ("call service not configured") (the server has no LiveKit settings).
 
 ## WebSocket
 
 `GET /rooms/{id}/ws?access_token=<access_token>`. See
 [ws-protocol.md](ws-protocol.md) for the handshake, events and close codes.
 Handshake failures are plain HTTP responses with the standard error body:
-`400 invalid room id`, `403 origin not allowed`,
-`401 missing or invalid access token`,
-`403 join the room before connecting`.
+`400 VALIDATION_ERROR` ("invalid room id"), `403 FORBIDDEN` ("origin not allowed"),
+`401 UNAUTHORIZED` ("invalid access token": missing, malformed or bad signature),
+`401 TOKEN_EXPIRED` ("access token expired"),
+`403 FORBIDDEN` ("join the room before connecting").
 
 ## Health
 
