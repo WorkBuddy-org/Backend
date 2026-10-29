@@ -32,8 +32,11 @@ All settings come from environment variables. In development (`ENV` unset or
 | `JWT_REFRESH_TTL` | `720h` | Refresh token lifetime. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URL` | empty | Google OAuth app; required in production. |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_REDIRECT_URL` | empty | GitHub OAuth app; required in production. |
-| `FRONTEND_CALLBACK_URL` | empty | Frontend URL that receives tokens after OAuth login; required in production. |
+| `FRONTEND_CALLBACK_URL` | empty | Frontend page the OAuth callback redirects to with `?status=ok` (auth cookies set) or `?error=<CODE>`; tokens are never in the URL. Required in production. |
 | `WS_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to open WebSockets; empty allows any origin in development and rejects browser origins otherwise. |
+| `CORS_ALLOWED_ORIGINS` | empty | Comma-separated browser origins allowed to call the API with credentials (CORS), e.g. `https://app.example.com`. Cookie-authenticated `POST`/`PATCH`/`PUT`/`DELETE` requests whose `Origin` is not listed get 403. Empty means `http://localhost:3000` in development and no cross-origin access otherwise. |
+| `COOKIE_SECURE` | `true` in production, else `false` | Sets the `Secure` attribute on the `access_token` and `refresh_token` cookies. |
+| `COOKIE_DOMAIN` | empty | `Domain` attribute of the auth cookies, e.g. `.example.com` so `app.` and `api.` share them; empty means host-only cookies. |
 | `EXTENSION_PROMPT_TIMEOUT` | `60s` | How long a user has to answer the "need more time?" prompt before being removed from the room. |
 | `EXTENSION_MAX_COUNT` | `3` | Maximum timer extensions per task. |
 | `CHAT_RATE_LIMIT` | `10` | Chat messages a user may send per `CHAT_RATE_WINDOW`, across all rooms; `0` disables the limit. |

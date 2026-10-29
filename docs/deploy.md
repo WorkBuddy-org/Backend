@@ -77,7 +77,8 @@ below for OAuth and LiveKit):
 - `JWT_SECRET`: `openssl rand -hex 32`.
 - `ENV=production` (leave as is).
 - `GOOGLE_*`, `GITHUB_*`, `FRONTEND_CALLBACK_URL`, `WS_ALLOWED_ORIGINS`,
-  `LIVEKIT_*`.
+  `CORS_ALLOWED_ORIGINS`, `COOKIE_DOMAIN`, `LIVEKIT_*`. `COOKIE_SECURE`
+  stays `true`.
 
 `POSTGRES_USER`, `POSTGRES_PASSWORD` and `POSTGRES_DB` only take effect the
 first time the `postgres_data` volume is created. Changing them later doesn't
@@ -181,9 +182,18 @@ is the frontend.
 
 ### Frontend settings
 
-- `FRONTEND_CALLBACK_URL`: the frontend page that receives
-  `?access_token=…&refresh_token=…&expires_in=…` after OAuth login, e.g.
-  `https://app.example.com/auth/callback`.
+- `FRONTEND_CALLBACK_URL`: the frontend page the OAuth callback redirects to,
+  e.g. `https://app.example.com/auth/callback`. It gets `?status=ok` (the
+  auth cookies are already set) or `?error=<CODE>`; tokens are never in the
+  URL.
+- `CORS_ALLOWED_ORIGINS`: the frontend origin(s), comma-separated, e.g.
+  `https://app.example.com`. Needed for the browser to call the API with
+  cookies; cookie-authenticated writes from any other `Origin` get 403.
+- `COOKIE_DOMAIN`: the parent domain shared by the app and API hosts, with a
+  leading dot, e.g. `.example.com` for `app.example.com` + `api.example.com`.
+  Both hosts must be subdomains of it, or the browser drops the cookies.
+- `COOKIE_SECURE`: `true` (the default in production): cookies only travel
+  over HTTPS, which Caddy provides.
 - `WS_ALLOWED_ORIGINS`: the frontend origin(s), comma-separated, e.g.
   `https://app.example.com`. With `ENV=production`, an empty value rejects
   every browser WebSocket.
