@@ -96,6 +96,7 @@ func main() {
 		},
 	})
 	roomService.SetLeaveListener(wsHandler)
+	roomService.SetEventPublisher(wsHub)
 
 	taskService := task.NewService(task.NewRepository(db), roomService, task.TimerDeps{
 		Index:  task.NewTimerIndex(redisClient, ""),

@@ -14,6 +14,7 @@ const (
 	TypeUserJoined       = "user_joined"
 	TypeUserLeft         = "user_left"
 	TypePong             = "pong"
+	TypeRoomUpdated      = "room_updated"
 
 	// Emitted by later phases.
 	TypeTimerStarted        = "timer_started"
@@ -89,6 +90,14 @@ type UserJoinedData struct {
 type UserLeftData struct {
 	UserID uuid.UUID `json:"user_id"`
 	Reason string    `json:"reason"`
+}
+
+// RoomUpdatedData is sent to the room when its participants change.
+type RoomUpdatedData struct {
+	RoomID            uuid.UUID `json:"room_id"`
+	Status            string    `json:"status"`
+	ParticipantsCount int       `json:"participants_count"`
+	Capacity          int       `json:"capacity"`
 }
 
 // TimerStartedData announces a task timer. Clients count down locally from

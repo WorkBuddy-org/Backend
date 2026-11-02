@@ -247,11 +247,11 @@ func TestNoExtendKicks(t *testing.T) {
 // clock is just after it). Exactly one of them must win, every time.
 func TestExtendRacesDeadline(t *testing.T) {
 	e := newTimerEnv(t)
-	roomID := e.createRoom()
 	ctx := context.Background()
 
 	extendWins, deadlineWins := 0, 0
 	for i := 0; i < 15; i++ {
+		roomID := e.createRoom()
 		owner, ownerToken := e.createUser()
 		e.join(roomID, owner)
 		taskID := e.createTask(roomID, ownerToken)

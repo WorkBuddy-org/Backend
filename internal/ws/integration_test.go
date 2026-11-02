@@ -800,3 +800,33 @@ func (e *testEnv) dialURL(url string, h http.Header) (*websocket.Conn, *http.Res
 	}
 	return conn, resp, err
 }
+
+func TestWebSocketRoomUpdatedBroadcast(t *testing.T) {
+	e := newTestEnv(t, ws.Config{})
+	e.rooms.SetEventPublisher(e.hub)
+
+	roomID := e.createRoom()
+	_, aliceToken := e.createUser("Alice")
+	_, bobToken := e.createUser("Bob")
+	e.joinREST(roomID, aliceToken)
+
+	conn := e.dial(roomID, aliceToken)
+	expectType(t, readEvent(t, conn), ws.TypePresenceSnapshot)
+
+	e.joinREST(roomID, bobToken)
+	updated := readEvent(t, conn)
+	expectType(t, updated, ws.TypeRoomUpdated)
+	var data ws.RoomUpdatedData
+	decodeData(t, updated, &data)
+	if data.RoomID != roomID || data.Status != "live" || data.ParticipantsCount != 2 || data.Capacity != 6 {
+		t.Fatalf("unexpected room_updated %+v", data)
+	}
+
+	e.leaveREST(roomID, bobToken)
+	left := readEvent(t, conn)
+	expectType(t, left, ws.TypeRoomUpdated)
+	decodeData(t, left, &data)
+	if data.ParticipantsCount != 1 {
+		t.Fatalf("expected 1 participant after leave, got %+v", data)
+	}
+}

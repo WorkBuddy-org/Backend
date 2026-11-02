@@ -179,9 +179,9 @@ Error codes:
 | `RATE_LIMITED` | 429 | Register, login or chat limit hit. Always has `Retry-After` (whole seconds) |
 | `SERVICE_UNAVAILABLE` | 503 | Feature not configured on the server (an OAuth provider, LiveKit) |
 | `INTERNAL` | 500, 502 | Unexpected failure. Generic message; details only in server logs. `502` when an OAuth provider call fails |
-| `ROOM_FULL` | 409 | Reserved, not returned yet |
+| `ROOM_FULL` | 409 | `POST /rooms/{id}/join` when the room is at capacity |
 | `ALREADY_RESERVED` | 409 | Reserved, not returned yet |
-| `ROOM_ENDED` | 409 | Reserved, not returned yet |
+| `ROOM_ENDED` | 409 | `POST /rooms/{id}/join` after the room's `ends_at` |
 | `INVITE_EXPIRED` | — | Reserved, not returned yet (invites don't expire; see [`GET /invites/{code}`](#get-invitescode)) |
 | `INVITE_INVALID` | — | Reserved, not returned yet |
 | `FILE_TOO_LARGE` | — | Reserved for uploads, not returned yet |
@@ -447,28 +447,55 @@ must be present. If any field is invalid, nothing is saved.
 
 ## Rooms
 
-Rooms are fixed and seeded by migrations. There are no create, update or
-delete endpoints.
+Rooms have no create, update or delete endpoints. They come from migrations
+and from the seed command (`go run ./cmd/migrate seed`, see the README).
 
-Room object:
+Room object, returned by the list, by `GET /rooms/{id}` and inside the join
+response:
 
 ```json
 {
   "id": "0b6e5d4c-…",
-  "name": "Deep Focus",
+  "title": "Deep Work Session",
   "type": "focus",
-  "tags": ["quiet", "solo"],
-  "created_at": "2026-10-01T00:00:00Z"
+  "status": "live",
+  "tags": ["coding", "quiet"],
+  "participants": [
+    { "id": "6f1c2a4e-…", "name": "Ada", "avatar_url": null }
+  ],
+  "participants_count": 1,
+  "capacity": 6,
+  "starts_at": null,
+  "ends_at": null,
+  "reserved_by_me": false
 }
 ```
 
-| Field | Type |
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | |
+| `title` | string | |
+| `type` | `"focus"` \| `"discussion"` | |
+| `status` | `"live"` \| `"starting_soon"` \| `"open"` \| `"full"` \| `"ended"` | Computed on every read, see below |
+| `tags` | string[] | May be `[]` |
+| `participants` | array | The earliest joiners, at most 4; `[]` when empty |
+| `participants[].id` | UUID | |
+| `participants[].name` | string | |
+| `participants[].avatar_url` | string \| `null` | |
+| `participants_count` | int | Everyone in the room, not just the 4 above |
+| `capacity` | int | |
+| `starts_at`, `ends_at` | timestamp \| `null` | |
+| `reserved_by_me` | bool | Always `false`: reservations don't exist yet |
+
+`status` is the first match, in this order:
+
+| Condition | `status` |
 |---|---|
-| `id` | UUID |
-| `name` | string |
-| `type` | `"focus"` \| `"collab"` \| `"break"` |
-| `tags` | string[] (may be `[]`) |
-| `created_at` | timestamp |
+| `ends_at` is in the past | `ended` |
+| `starts_at` is in the future | `starting_soon` |
+| `participants_count` >= `capacity` | `full` |
+| `type` is `discussion` | `open` |
+| otherwise | `live` |
 
 Participation object:
 
@@ -487,17 +514,23 @@ Participation object:
 |---|---|
 | Auth | required |
 
-Query parameters, both optional:
+Query parameters, all optional:
 
 | Param | Type | Meaning |
 |---|---|---|
-| `type` | string | Only rooms of this type; an unknown type gives `[]` |
+| `type` | `all` \| `focus` \| `discussion` | Default `all` |
 | `tags` | comma-separated strings | Rooms having **any** of the tags, e.g. `tags=quiet,code` |
 
-`200 OK`: an array of room objects, sorted by name (`[]` when nothing
-matches). No pagination.
+`200 OK`: every matching room, sorted by title. No pagination. `items` is `[]`
+when nothing matches.
 
-No errors of its own.
+```json
+{ "items": [ { "id": "0b6e5d4c-…", "title": "Deep Work Session", "type": "focus", "status": "live", "…": "see the room object" } ] }
+```
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `VALIDATION_ERROR` | `{"type": "INVALID_VALUE"}` |
 
 ### `GET /rooms/{id}`
 
@@ -505,11 +538,7 @@ No errors of its own.
 |---|---|
 | Auth | required |
 
-`200 OK`:
-
-```json
-{ "room": { "id": "0b6e5d4c-…", "name": "Deep Focus", "type": "focus", "tags": ["quiet"], "created_at": "…" } }
-```
+`200 OK`: the room object, not wrapped.
 
 | Status | Code | When |
 |---|---|---|
@@ -523,16 +552,20 @@ No errors of its own.
 | Auth | required |
 | Body | none |
 
-**Idempotent**: if the user is already in the room, the open participation is
-returned and nothing new is created. A user may be in several rooms at once.
-Joining is required before opening the room WebSocket, using chat, starting a
-task timer or getting a call token.
+**Idempotent**: a user already in the room gets the open participation back,
+nothing new is created and nobody is counted twice, even if the room has since
+filled up or ended. A user may be in several rooms at once. Joining is required
+before opening the room WebSocket, using chat, starting a task timer or getting
+a call token. A new join sends `room_updated` to the room.
+
+A room with `starts_at` in the future can be joined. The capacity check runs
+under a lock on the room, so concurrent joins can't overbook it.
 
 `200 OK`:
 
 ```json
 {
-  "room": { "id": "0b6e5d4c-…", "name": "Deep Focus", "type": "focus", "tags": ["quiet"], "created_at": "…" },
+  "room": { "id": "0b6e5d4c-…", "title": "Deep Work Session", "type": "focus", "status": "live", "…": "see the room object" },
   "participation": {
     "id": "c1d2e3f4-…",
     "user_id": "6f1c2a4e-…",
@@ -546,6 +579,8 @@ task timer or getting a call token.
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | `{"id": "INVALID_FORMAT"}` |
 | 404 | `NOT_FOUND` | No such room |
+| 409 | `ROOM_FULL` | The room is at capacity |
+| 409 | `ROOM_ENDED` | `ends_at` is in the past |
 
 ### `POST /rooms/{id}/leave`
 
@@ -555,7 +590,8 @@ task timer or getting a call token.
 | Body | none |
 
 `204 No Content`. The user's sockets to this room are closed with `1000`, and
-the rest of the room gets `user_left` with reason `left_voluntarily`.
+the rest of the room gets `user_left` with reason `left_voluntarily`, then
+`room_updated`.
 
 | Status | Code | When |
 |---|---|---|

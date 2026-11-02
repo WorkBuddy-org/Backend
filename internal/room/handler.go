@@ -31,12 +31,29 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *auth.Middleware) 
 	})
 }
 
-type roomDTO struct {
+type participantPreviewDTO struct {
 	ID        uuid.UUID `json:"id"`
 	Name      string    `json:"name"`
-	Type      string    `json:"type"`
-	Tags      []string  `json:"tags"`
-	CreatedAt time.Time `json:"created_at"`
+	AvatarURL *string   `json:"avatar_url"`
+}
+
+type roomDTO struct {
+	ID                uuid.UUID               `json:"id"`
+	Title             string                  `json:"title"`
+	Type              string                  `json:"type"`
+	Status            string                  `json:"status"`
+	Tags              []string                `json:"tags"`
+	Participants      []participantPreviewDTO `json:"participants"`
+	ParticipantsCount int                     `json:"participants_count"`
+	Capacity          int                     `json:"capacity"`
+	StartsAt          *time.Time              `json:"starts_at"`
+	EndsAt            *time.Time              `json:"ends_at"`
+	// Reservations don't exist yet, so this is always false.
+	ReservedByMe bool `json:"reserved_by_me"`
+}
+
+type roomListResponse struct {
+	Items []roomDTO `json:"items"`
 }
 
 type participationDTO struct {
@@ -54,24 +71,27 @@ type participantDTO struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
-// Rooms are not session-based (timers are per task), so room responses carry
-// no session fields.
-type roomDetailResponse struct {
-	Room roomDTO `json:"room"`
-}
-
 type joinResponse struct {
 	Room          roomDTO          `json:"room"`
 	Participation participationDTO `json:"participation"`
 }
 
-func toRoomDTO(rm *Room) roomDTO {
+func toRoomDTO(v *View) roomDTO {
+	participants := make([]participantPreviewDTO, len(v.Participants))
+	for i, p := range v.Participants {
+		participants[i] = participantPreviewDTO{ID: p.UserID, Name: p.Name, AvatarURL: p.AvatarURL}
+	}
 	return roomDTO{
-		ID:        rm.ID,
-		Name:      rm.Name,
-		Type:      rm.Type,
-		Tags:      rm.Tags,
-		CreatedAt: rm.CreatedAt,
+		ID:                v.ID,
+		Title:             v.Name,
+		Type:              v.Type,
+		Status:            v.Status,
+		Tags:              v.Tags,
+		Participants:      participants,
+		ParticipantsCount: v.ParticipantsCount,
+		Capacity:          v.Capacity,
+		StartsAt:          v.StartsAt,
+		EndsAt:            v.EndsAt,
 	}
 }
 
@@ -87,8 +107,14 @@ func toParticipationDTO(p *Participation) participationDTO {
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-	filter := Filter{
-		Type: r.URL.Query().Get("type"),
+	var filter Filter
+	switch t := r.URL.Query().Get("type"); t {
+	case "", "all":
+	case TypeFocus, TypeDiscussion:
+		filter.Type = t
+	default:
+		httpx.Validation(w, "type must be one of all, focus, discussion", httpx.Fields{"type": httpx.FieldInvalidValue})
+		return
 	}
 	if tags := r.URL.Query().Get("tags"); tags != "" {
 		filter.Tags = strings.Split(tags, ",")
@@ -104,7 +130,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	for i := range rooms {
 		dtos[i] = toRoomDTO(&rooms[i])
 	}
-	httpx.JSON(w, http.StatusOK, dtos)
+	httpx.JSON(w, http.StatusOK, roomListResponse{Items: dtos})
 }
 
 func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
@@ -114,13 +140,13 @@ func (h *Handler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rm, _, err := h.service.GetRoomDetail(r.Context(), id)
+	view, err := h.service.GetRoom(r.Context(), id)
 	if err != nil {
 		writeError(w, err, "get room failed", "room_id", id)
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, roomDetailResponse{Room: toRoomDTO(rm)})
+	httpx.JSON(w, http.StatusOK, toRoomDTO(view))
 }
 
 func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
@@ -203,6 +229,10 @@ func writeError(w http.ResponseWriter, err error, logMsg string, args ...any) {
 		httpx.NotFound(w, err.Error())
 	case errors.Is(err, ErrNotMember):
 		httpx.Forbidden(w, err.Error())
+	case errors.Is(err, ErrRoomFull):
+		httpx.Error(w, http.StatusConflict, httpx.CodeRoomFull, err.Error())
+	case errors.Is(err, ErrRoomEnded):
+		httpx.Error(w, http.StatusConflict, httpx.CodeRoomEnded, err.Error())
 	default:
 		httpx.Internal(w, logMsg, err, args...)
 	}

@@ -50,6 +50,19 @@ services:
       redis:
         condition: service_healthy
 
+  # One-shot: inserts the demo rooms by title, then exits. Safe to re-run:
+  # `run --rm seed`.
+  seed:
+    build: .
+    image: workbuddy-app:latest
+    entrypoint: ["/app/migrate"]
+    command: ["seed"]
+    env_file: .env.prod
+    restart: "no"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   app:
     build: .
     image: workbuddy-app:latest
