@@ -4,6 +4,8 @@ Go backend for WorkBuddy — shared focus rooms with live timers, tasks, and cha
 
 ## Getting Started
 
+Working on the backend itself:
+
 ```
 make docker-up      # Postgres + Redis
 make migrate-up      # apply migrations (seeds fixed rooms)
@@ -14,6 +16,85 @@ See `.env.example` for a ready-to-copy local configuration.
 
 API docs for the frontend: [docs/api.md](docs/api.md) (REST) and
 [docs/ws-protocol.md](docs/ws-protocol.md) (WebSocket events).
+
+## Run the backend for frontend development
+
+Everything runs in Docker; no Go, Postgres or Redis needed on your machine.
+You get the API on `http://localhost:8080`, already migrated and with demo
+rooms, set up for a frontend on `http://localhost:3000`.
+
+1. Put a JWT secret in `.env` next to `docker-compose.dev.yml` (skip this if you
+   already have an `.env` with `JWT_SECRET`, this command would replace it):
+
+   ```sh
+   echo "JWT_SECRET=$(openssl rand -hex 32)" > .env
+   ```
+
+2. Start the stack:
+
+   ```sh
+   docker compose -f docker-compose.dev.yml up -d --build
+   curl http://localhost:8080/health
+   # {"status":"ok","checks":{"postgres":"ok","redis":"ok"}}
+   ```
+
+`migrate` and `seed` run once and exit; `docker compose -f
+docker-compose.dev.yml ps -a` shows them as `Exited (0)` and `app` as `healthy`.
+
+The defaults are `ENV=development`, `CORS_ALLOWED_ORIGINS` and
+`WS_ALLOWED_ORIGINS` = `http://localhost:3000`, `FRONTEND_CALLBACK_URL` =
+`http://localhost:3000/auth/callback` and `COOKIE_SECURE=false`. Set any of them
+in `.env` to override it.
+
+**Docs:** [docs/api.md](docs/api.md) (REST), [docs/ws-protocol.md](docs/ws-protocol.md)
+(WebSocket at `ws://localhost:8080/rooms/{id}/ws`).
+
+**Try it with curl.** Auth uses HttpOnly cookies; `-c` stores them and `-b` sends
+them:
+
+```sh
+# Register; the cookies land in cookies.txt
+curl -i -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"first_name":"Ada","last_name":"Lovelace","email":"ada@example.com","password":"correct-password"}' \
+  http://localhost:8080/auth/register
+
+# Log in later with the same account
+curl -i -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"email":"ada@example.com","password":"correct-password"}' \
+  http://localhost:8080/auth/login
+
+# Authenticated calls send the cookies
+curl -b cookies.txt http://localhost:8080/me
+curl -b cookies.txt http://localhost:8080/rooms
+curl -b cookies.txt -X POST http://localhost:8080/rooms/ROOM_ID/join
+curl -b cookies.txt http://localhost:8080/rooms/ROOM_ID/tasks
+```
+
+In the browser, call the API with `fetch(url, { credentials: "include" })`.
+
+**Re-seed** (adds missing demo rooms, changes nothing else):
+
+```sh
+docker compose -f docker-compose.dev.yml run --rm seed
+```
+
+**Reset the database** (deletes all data, then starts fresh):
+
+```sh
+docker compose -f docker-compose.dev.yml down -v
+docker compose -f docker-compose.dev.yml up -d --build
+```
+
+**Update after pulling new code:** run the `up -d --build` command again; it
+applies new migrations. **Logs:** `docker compose -f docker-compose.dev.yml logs -f app`.
+
+**Features that need keys.** Everything else works with no keys at all:
+
+| Feature | Variables in `.env` | Without them |
+|---|---|---|
+| Google sign-in | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URL` | `GET /auth/google` answers `503 SERVICE_UNAVAILABLE` |
+| GitHub sign-in | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URL` | `GET /auth/github` answers `503 SERVICE_UNAVAILABLE` |
+| Audio and video calls | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | `POST /rooms/{id}/call/token` answers `503 SERVICE_UNAVAILABLE` |
 
 ## Demo Rooms
 

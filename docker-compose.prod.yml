@@ -5,6 +5,8 @@
 #
 # --env-file feeds the ${...} values below; env_file passes the same file
 # to the app containers. See docs/deploy.md.
+# Only app builds the image; migrate and seed reuse it, because several services
+# building one tag at once can fail.
 name: workbuddy-prod
 
 services:
@@ -38,8 +40,8 @@ services:
   # The app starts only after it succeeds. Other commands:
   # `run --rm migrate status|version|down`.
   migrate:
-    build: .
     image: workbuddy-app:latest
+    pull_policy: never
     entrypoint: ["/app/migrate"]
     command: ["up"]
     env_file: .env.prod
@@ -53,8 +55,8 @@ services:
   # One-shot: inserts the demo rooms by title, then exits. Safe to re-run:
   # `run --rm seed`.
   seed:
-    build: .
     image: workbuddy-app:latest
+    pull_policy: never
     entrypoint: ["/app/migrate"]
     command: ["seed"]
     env_file: .env.prod
