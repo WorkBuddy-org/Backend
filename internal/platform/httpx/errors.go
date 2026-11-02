@@ -70,6 +70,26 @@ type ErrorResponse struct {
 	Error ErrorBody `json:"error"`
 }
 
+// ValidationError is returned by services for invalid input that names the
+// offending fields. Handlers answer it with WriteValidationError.
+type ValidationError struct {
+	Message string
+	Fields  Fields
+}
+
+func (e *ValidationError) Error() string { return e.Message }
+
+// WriteValidationError answers a *ValidationError in err with a 400 and
+// reports whether it did.
+func WriteValidationError(w http.ResponseWriter, err error) bool {
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
+		return false
+	}
+	Validation(w, ve.Message, ve.Fields)
+	return true
+}
+
 // Error writes {"error": {"code": code, "message": message}}.
 func Error(w http.ResponseWriter, status int, code Code, message string) {
 	ErrorWithDetails(w, status, code, message, nil)

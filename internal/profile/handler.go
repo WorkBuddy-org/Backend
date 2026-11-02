@@ -25,6 +25,10 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *auth.Middleware) 
 		r.Use(authMiddleware.RequireAuth)
 		r.Get("/profile", h.get)
 		r.Patch("/profile", h.update)
+		r.Get("/me", h.me)
+		r.Get("/me/onboarding", h.getOnboarding)
+		r.Patch("/me/onboarding", h.updateOnboarding)
+		r.Post("/me/onboarding/skip", h.skipOnboarding)
 	})
 }
 
@@ -125,4 +129,105 @@ func validationFields(err error) (httpx.Fields, bool) {
 		return httpx.Fields{"timezone": httpx.FieldInvalidValue}, true
 	}
 	return nil, false
+}
+
+type onboardingDTO struct {
+	Goal                *string `json:"goal"`
+	Experience          *string `json:"experience"`
+	Profession          *string `json:"profession"`
+	ProfessionOther     *string `json:"profession_other"`
+	OnboardingCompleted bool    `json:"onboarding_completed"`
+}
+
+func toOnboardingDTO(u *user.User) onboardingDTO {
+	return onboardingDTO{
+		Goal:                u.Goal,
+		Experience:          u.Experience,
+		Profession:          u.Profession,
+		ProfessionOther:     u.ProfessionOther,
+		OnboardingCompleted: u.OnboardingCompleted,
+	}
+}
+
+type onboardingRequest struct {
+	Goal            *string `json:"goal"`
+	Experience      *string `json:"experience"`
+	Profession      *string `json:"profession"`
+	ProfessionOther *string `json:"profession_other"`
+}
+
+// currentUser loads the signed-in user, writing the error response itself.
+func (h *Handler) currentUser(w http.ResponseWriter, r *http.Request) (*user.User, bool) {
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Unauthorized(w, "missing user context")
+		return nil, false
+	}
+	u, err := h.service.Get(r.Context(), userID)
+	if err != nil {
+		writeUserError(w, err, userID)
+		return nil, false
+	}
+	return u, true
+}
+
+func writeUserError(w http.ResponseWriter, err error, userID uuid.UUID) {
+	switch {
+	case httpx.WriteValidationError(w, err):
+	case errors.Is(err, ErrNoFields):
+		httpx.Validation(w, err.Error(), nil)
+	case errors.Is(err, ErrUserNotFound):
+		httpx.NotFound(w, err.Error())
+	default:
+		httpx.Internal(w, "user request failed", err, "user_id", userID)
+	}
+}
+
+func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
+	if u, ok := h.currentUser(w, r); ok {
+		httpx.JSON(w, http.StatusOK, user.ToDTO(u))
+	}
+}
+
+func (h *Handler) getOnboarding(w http.ResponseWriter, r *http.Request) {
+	if u, ok := h.currentUser(w, r); ok {
+		httpx.JSON(w, http.StatusOK, toOnboardingDTO(u))
+	}
+}
+
+func (h *Handler) updateOnboarding(w http.ResponseWriter, r *http.Request) {
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Unauthorized(w, "missing user context")
+		return
+	}
+
+	var req onboardingRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
+		return
+	}
+
+	u, err := h.service.UpdateOnboarding(r.Context(), userID, OnboardingInput(req))
+	if err != nil {
+		writeUserError(w, err, userID)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, toOnboardingDTO(u))
+}
+
+// skipOnboarding takes no body.
+func (h *Handler) skipOnboarding(w http.ResponseWriter, r *http.Request) {
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Unauthorized(w, "missing user context")
+		return
+	}
+
+	u, err := h.service.SkipOnboarding(r.Context(), userID)
+	if err != nil {
+		writeUserError(w, err, userID)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, toOnboardingDTO(u))
 }

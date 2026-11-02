@@ -85,9 +85,10 @@ func newRegisterRouter(t *testing.T, limit int, limiterRedis func(real *goredis.
 func register(t *testing.T, router http.Handler, forwardedFor string) *httptest.ResponseRecorder {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{
-		"email":    "register-limit-" + uuid.NewString() + "@example.com",
-		"password": "correct-horse",
-		"name":     "Register Tester",
+		"email":      "register-limit-" + uuid.NewString() + "@example.com",
+		"password":   "correct-horse",
+		"first_name": "Register",
+		"last_name":  "Tester",
 	})
 	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")

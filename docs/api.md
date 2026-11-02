@@ -9,7 +9,7 @@ a route in the router don't match. Real-time events are in
 - [Basics](#basics)
 - [Authentication](#authentication) (cookies, refresh, CORS, CSRF)
 - [Errors](#errors) (format and code table)
-- Endpoints: [Health](#health) · [Auth](#auth) · [Profile](#profile) ·
+- Endpoints: [Health](#health) · [Auth](#auth) · [Me](#me-and-onboarding) · [Profile](#profile) ·
   [Rooms](#rooms) · [Tasks](#tasks) · [Chat](#chat) · [Calls](#calls) ·
   [Invites](#invites) · [WebSocket](#websocket)
 - [Timer flow](#timer-flow)
@@ -223,13 +223,39 @@ failing check set to `"unavailable"`:
 
 ## Auth
 
-User object (register, login, `GET /auth/me`):
+User object, returned by `GET /me` and `GET /auth/me` and as `user` by register
+and login:
 
-| Field | Type |
-|---|---|
-| `id` | UUID |
-| `email` | string |
-| `name` | string (may be `""`) |
+```json
+{
+  "id": "6f1c2a4e-…",
+  "email": "ada@example.com",
+  "first_name": "Ada",
+  "last_name": "Lovelace",
+  "name": "Ada Lovelace",
+  "avatar_url": null,
+  "plan": "free",
+  "profession": null,
+  "profession_other": null,
+  "goal": null,
+  "experience": null,
+  "onboarding_completed": false
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | |
+| `email` | string | |
+| `first_name`, `last_name` | string | May be `""`: older accounts have only `first_name`, and OAuth names are split best-effort |
+| `name` | string | Display name; `first_name + " " + last_name` at registration |
+| `avatar_url` | string \| `null` | Set from the provider at OAuth sign-up |
+| `plan` | `"free"` \| `"pro"` | |
+| `profession` | `"uxui_designer"` \| `"qa"` \| `"project_manager"` \| `"backend_dev"` \| `"frontend_dev"` \| `"other"` \| `null` | |
+| `profession_other` | string \| `null` | Only when `profession` is `"other"` |
+| `goal` | `"improve_focus"` \| `"share_experience"` \| `"improve_skills"` \| `null` | |
+| `experience` | `"lt_1"` \| `"1_3"` \| `"3_5"` \| `"5_plus"` \| `null` | |
+| `onboarding_completed` | bool | |
 
 ### `POST /auth/register`
 
@@ -242,19 +268,18 @@ Request body:
 
 | Field | Type | Required | Rules |
 |---|---|---|---|
+| `first_name` | string | yes | Trimmed, 1–100 characters |
+| `last_name` | string | yes | Trimmed, 1–100 characters |
 | `email` | string | yes | Trimmed and lower-cased; must contain `@` with text on both sides, no whitespace |
 | `password` | string | yes | At least 8 bytes |
-| `name` | string | no | Display name, not validated (may be empty) |
 
-`201 Created`, both auth cookies set:
+`name` is not accepted any more; it is stored as `first_name + " " + last_name`.
 
-```json
-{ "user": { "id": "6f1c2a4e-…", "email": "ada@example.com", "name": "Ada" } }
-```
+`201 Created`, both auth cookies set, body `{ "user": <user object> }`.
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `VALIDATION_ERROR` | `{"email": "INVALID_FORMAT"}` ("invalid email address"); `{"password": "TOO_SHORT"}` ("password must be at least 8 characters") |
+| 400 | `VALIDATION_ERROR` | `details.fields` names every bad field: `first_name` / `last_name` (`REQUIRED`, `TOO_LONG`), `email` (`INVALID_FORMAT`), `password` (`TOO_SHORT`) |
 | 409 | `EMAIL_EXISTS` | The email belongs to any existing account |
 | 429 | `RATE_LIMITED` | Over the limit; `Retry-After` gives the seconds until the window resets |
 
@@ -276,11 +301,7 @@ Request body:
 | `email` | string | yes |
 | `password` | string | yes |
 
-`200 OK`, both auth cookies set, body as for register:
-
-```json
-{ "user": { "id": "6f1c2a4e-…", "email": "ada@example.com", "name": "Ada" } }
-```
+`200 OK`, both auth cookies set, body `{ "user": <user object> }`.
 
 | Status | Code | When |
 |---|---|---|
@@ -323,11 +344,7 @@ token.
 |---|---|
 | Auth | required |
 
-`200 OK`: the user object.
-
-```json
-{ "id": "6f1c2a4e-…", "email": "ada@example.com", "name": "Ada" }
-```
+`200 OK`: the user object, same as `GET /me`.
 
 | Status | Code | When |
 |---|---|---|
@@ -363,7 +380,7 @@ the URL.**
 
 | Outcome | Redirect | Cookies |
 |---|---|---|
-| Signed in (user found, linked or created) | `…?status=ok` | both auth cookies set |
+| Signed in (user found or created) | `…?status=ok` | both auth cookies set |
 | Failed | `…?error=<CODE>` | none |
 
 | `error` | Cause |
@@ -374,13 +391,102 @@ the URL.**
 | `SERVICE_UNAVAILABLE` | That provider isn't configured |
 | `INTERNAL` | Code exchange, profile fetch or token issuing failed |
 
+A newly created user gets `first_name` and `last_name` from the provider
+(Google's given and family name, otherwise the name split at the first space;
+GitHub's name or login) and `avatar_url` (Google `picture`, GitHub
+`avatar_url`). Existing users are not changed.
+
 The frontend callback page reads `status` / `error`; on `status=ok` it can
-call `GET /auth/me`. When `FRONTEND_CALLBACK_URL` itself is not configured
+call `GET /me`. When `FRONTEND_CALLBACK_URL` itself is not configured
 (never in production), the callback answers `500 INTERNAL` as JSON.
 
 ---
 
+## Me and onboarding
+
+### `GET /me`
+
+| | |
+|---|---|
+| Auth | required |
+
+`200 OK`: the [user object](#auth).
+
+| Status | Code | When |
+|---|---|---|
+| 404 | `NOT_FOUND` | The user was deleted |
+
+Onboarding object, returned by all three endpoints below:
+
+```json
+{
+  "goal": "improve_focus",
+  "experience": "1_3",
+  "profession": "other",
+  "profession_other": "Data engineer",
+  "onboarding_completed": true
+}
+```
+
+Types are as in the user object.
+
+### `GET /me/onboarding`
+
+| | |
+|---|---|
+| Auth | required |
+
+`200 OK`: the onboarding object.
+
+| Status | Code | When |
+|---|---|---|
+| 404 | `NOT_FOUND` | The user was deleted |
+
+### `PATCH /me/onboarding`
+
+| | |
+|---|---|
+| Auth | required |
+
+Partial update. Absent or `null` fields are unchanged; at least one must be
+present. `onboarding_completed` becomes `true` once the user has a
+`profession`, and is never set back to `false`.
+
+| Field | Type | Rules |
+|---|---|---|
+| `goal` | string | `improve_focus`, `share_experience`, `improve_skills` |
+| `experience` | string | `lt_1`, `1_3`, `3_5`, `5_plus` |
+| `profession` | string | `uxui_designer`, `qa`, `project_manager`, `backend_dev`, `frontend_dev`, `other` |
+| `profession_other` | string | Only when the resulting `profession` is `other`. Trimmed, at most 100 characters. Optional even then |
+
+Changing `profession` away from `other` clears `profession_other`.
+
+`200 OK`: the onboarding object.
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `VALIDATION_ERROR` | No field present ("no fields to update"); `{"goal": "INVALID_VALUE"}`; `{"experience": "INVALID_VALUE"}`; `{"profession": "INVALID_VALUE"}`; `{"profession_other": "INVALID_VALUE"}` when the profession isn't `other`; `{"profession_other": "TOO_LONG"}` |
+| 404 | `NOT_FOUND` | The user was deleted |
+
+### `POST /me/onboarding/skip`
+
+| | |
+|---|---|
+| Auth | required |
+| Body | none |
+
+Sets `onboarding_completed` to `true` without touching the other fields.
+`200 OK`: the onboarding object.
+
+| Status | Code | When |
+|---|---|---|
+| 404 | `NOT_FOUND` | The user was deleted |
+
+---
+
 ## Profile
+
+`/profile` keeps working next to `/me`.
 
 Profile object:
 
@@ -1029,6 +1135,10 @@ prompt time out.
 | GET | `/auth/google/callback` | OAuth state cookie |
 | GET | `/auth/github` | — (browser navigation) |
 | GET | `/auth/github/callback` | OAuth state cookie |
+| GET | `/me` | Auth |
+| GET | `/me/onboarding` | Auth |
+| PATCH | `/me/onboarding` | Auth |
+| POST | `/me/onboarding/skip` | Auth |
 | GET | `/profile` | Auth |
 | PATCH | `/profile` | Auth |
 | GET | `/rooms` | Auth |

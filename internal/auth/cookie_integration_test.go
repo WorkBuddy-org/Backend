@@ -88,7 +88,7 @@ func (e *cookieEnv) register() (*httptest.ResponseRecorder, string) {
 	e.t.Helper()
 	email := "cookie-" + uuid.NewString() + "@example.com"
 	e.t.Cleanup(func() { deleteUserByEmail(e.t, email) })
-	body, _ := json.Marshal(map[string]string{"email": email, "password": "correct-password", "name": "Cookie User"})
+	body, _ := json.Marshal(map[string]string{"email": email, "password": "correct-password", "first_name": "Cookie", "last_name": "User"})
 	req := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := e.do(req)
@@ -344,7 +344,14 @@ func TestCORSPreflight(t *testing.T) {
 
 // fakeGoogle answers the Google token and userinfo endpoints.
 type fakeGoogle struct {
-	id, email string
+	id, email, name string
+}
+
+func (f fakeGoogle) displayName() string {
+	if f.name != "" {
+		return f.name
+	}
+	return "OAuth User"
 }
 
 func (f fakeGoogle) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -353,7 +360,7 @@ func (f fakeGoogle) RoundTrip(r *http.Request) (*http.Response, error) {
 	case r.URL.Host == "oauth2.googleapis.com" && r.URL.Path == "/token":
 		body = `{"access_token":"provider-token","token_type":"Bearer","expires_in":3600}`
 	case r.URL.Host == "www.googleapis.com" && r.URL.Path == "/oauth2/v2/userinfo":
-		b, _ := json.Marshal(map[string]string{"id": f.id, "email": f.email, "name": "OAuth User"})
+		b, _ := json.Marshal(map[string]string{"id": f.id, "email": f.email, "name": f.displayName()})
 		body = string(b)
 	default:
 		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: r}, nil
@@ -427,5 +434,96 @@ func TestOAuthCallbackRedirects(t *testing.T) {
 	req.AddCookie(access)
 	if me := e.do(req); me.Code != http.StatusOK || !strings.Contains(me.Body.String(), email) {
 		t.Fatalf("cookie from oauth must authenticate, got %d: %s", me.Code, me.Body.String())
+	}
+}
+
+func TestRegisterFields(t *testing.T) {
+	e := newCookieEnv(t, auth.CookieConfig{}, auth.OAuthConfig{})
+	post := func(body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		return e.do(httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(b)))
+	}
+
+	email := "fields-" + uuid.NewString() + "@example.com"
+	t.Cleanup(func() { deleteUserByEmail(t, email) })
+	rec := post(map[string]any{"first_name": "  Ada ", "last_name": " Lovelace", "email": email, "password": "correct-password"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		User map[string]any `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	u := created.User
+	if u["first_name"] != "Ada" || u["last_name"] != "Lovelace" || u["name"] != "Ada Lovelace" || u["email"] != email ||
+		u["plan"] != "free" || u["onboarding_completed"] != false {
+		t.Fatalf("unexpected user %v", u)
+	}
+	for _, field := range []string{"avatar_url", "profession", "profession_other", "goal", "experience"} {
+		if v, ok := u[field]; !ok || v != nil {
+			t.Fatalf("expected %s to be null, got %v (present %v)", field, v, ok)
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"everything missing", map[string]any{}, `"email":"INVALID_FORMAT"`},
+		{"first name missing", map[string]any{"last_name": "L", "email": "a@x.io", "password": "correct-password"}, `"first_name":"REQUIRED"`},
+		{"blank last name", map[string]any{"first_name": "A", "last_name": "  ", "email": "a@x.io", "password": "correct-password"}, `"last_name":"REQUIRED"`},
+		{"long first name", map[string]any{"first_name": strings.Repeat("я", 101), "last_name": "L", "email": "a@x.io", "password": "correct-password"}, `"first_name":"TOO_LONG"`},
+		{"short password", map[string]any{"first_name": "A", "last_name": "L", "email": "a@x.io", "password": "short"}, `"password":"TOO_SHORT"`},
+		{"the old name field", map[string]any{"name": "A", "first_name": "A", "last_name": "L", "email": "a@x.io", "password": "correct-password"}, `"name":"UNKNOWN_FIELD"`},
+	} {
+		rec := post(tc.body)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("%s: expected 400 with %s, got %d: %s", tc.name, tc.want, rec.Code, rec.Body.String())
+		}
+		assertErrorCode(t, rec.Body.String(), "VALIDATION_ERROR", "")
+	}
+}
+
+func TestOAuthSignUpFillsNamesOnlyOnCreate(t *testing.T) {
+	e := newCookieEnv(t, auth.CookieConfig{}, auth.OAuthConfig{
+		GoogleClientID:     "test-client",
+		GoogleClientSecret: "test-secret",
+		GoogleRedirectURL:  "http://localhost:8080/auth/google/callback",
+	})
+	email := "oauth-names-" + uuid.NewString() + "@example.com"
+	t.Cleanup(func() { deleteUserByEmail(t, email) })
+	id := uuid.NewString()
+
+	signIn := func(name string) map[string]any {
+		t.Helper()
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Transport: fakeGoogle{id: id, email: email, name: name}})
+		req := httptest.NewRequest(http.MethodGet, "/auth/google/callback?code=good&state=s", nil).WithContext(ctx)
+		req.AddCookie(&http.Cookie{Name: "oauth_state_google", Value: "s"})
+		rec := e.do(req)
+		access := requireCookie(t, rec, auth.AccessTokenCookie)
+
+		me := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+		me.AddCookie(access)
+		meRec := e.do(me)
+		var out map[string]any
+		if err := json.Unmarshal(meRec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode %s: %v", meRec.Body.String(), err)
+		}
+		return out
+	}
+
+	created := signIn("Grace Hopper")
+	if created["first_name"] != "Grace" || created["last_name"] != "Hopper" || created["name"] != "Grace Hopper" {
+		t.Fatalf("unexpected names on sign-up: %v", created)
+	}
+
+	// A later sign-in with a changed provider name leaves the user alone.
+	again := signIn("Someone Else")
+	if again["first_name"] != "Grace" || again["name"] != "Grace Hopper" {
+		t.Fatalf("existing user must stay untouched, got %v", again)
 	}
 }
