@@ -174,7 +174,7 @@ Error codes:
 | `NOT_FOUND` | 404 | Resource or route doesn't exist |
 | `METHOD_NOT_ALLOWED` | 405 | Route exists, but not for this method |
 | `EMAIL_EXISTS` | 409 | Register or OAuth sign-in with an email that is already taken |
-| `EXTEND_LIMIT_REACHED` | 409 | `POST /tasks/{id}/extend` when the task has no extensions left |
+| `EXTEND_LIMIT_REACHED` | 409 | `POST /tasks/{id}/extend` over the count limit or the total minutes limit |
 | `CONFLICT` | 409 | Other state conflicts: task completed, a timer already running, no extension prompt pending, prompt expired |
 | `RATE_LIMITED` | 429 | Register, login or chat limit hit. Always has `Retry-After` (whole seconds) |
 | `SERVICE_UNAVAILABLE` | 503 | Feature not configured on the server (an OAuth provider, LiveKit) |
@@ -777,20 +777,77 @@ Task object:
 
 | | |
 |---|---|
-| Auth | required. Being in the room is **not** required (only to start a timer) |
+| Auth | required. Being in the room is required only with `duration_minutes` |
 
 Request body:
 
 | Field | Type | Required | Rules |
 |---|---|---|---|
 | `text` | string | yes | Trimmed, 1–200 characters |
+| `duration_minutes` | int | no | `25`, `50` or `90`: also start the timer, atomically |
 
-`201 Created`: the task object, with `timer_status: "idle"`.
+With `duration_minutes` the task is created with its timer already running. If
+that isn't possible (another active timer, not in the room), no task is created.
+
+`201 Created`: the task object (`timer_status` is `"idle"`, or `"running"` with
+`duration_minutes`). The room gets `task_created`, and `timer_started` if the
+timer started.
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `VALIDATION_ERROR` | `{"id": "INVALID_FORMAT"}`; `{"text": "REQUIRED"}`; `{"text": "TOO_LONG"}` |
+| 400 | `VALIDATION_ERROR` | `{"id": "INVALID_FORMAT"}`; `{"text": "REQUIRED"}`; `{"text": "TOO_LONG"}`; `{"duration_minutes": "INVALID_VALUE"}` |
+| 403 | `FORBIDDEN` | With `duration_minutes`: not in the room |
 | 404 | `NOT_FOUND` | No such room |
+| 409 | `CONFLICT` | With `duration_minutes`: another timer of this user is active |
+
+### `GET /rooms/{id}/tasks`
+
+| | |
+|---|---|
+| Auth | required, and the caller must be in the room |
+
+The tasks in this room of everyone **currently in the room**, the caller
+included, newest first. Completed tasks are included. No pagination. Tasks of
+users who left or were removed are not listed.
+
+`200 OK`:
+
+```json
+{
+  "items": [
+    {
+      "id": "9d2a7c6b-…",
+      "text": "Write the API reference",
+      "author": { "id": "6f1c2a4e-…", "name": "Ada", "avatar_url": null },
+      "completed": false,
+      "timer_status": "running",
+      "duration_minutes": 25,
+      "timer_started_at": "2026-10-22T14:30:00.000000Z",
+      "ends_at": "2026-10-22T14:55:00.000000Z",
+      "extended_count": 0
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | UUID | |
+| `text` | string | |
+| `author.id` | UUID | |
+| `author.name` | string | |
+| `author.avatar_url` | string \| `null` | |
+| `completed` | bool | |
+| `timer_status` | `"idle"` \| `"running"` \| `"prompting"` \| `"ended"` | |
+| `duration_minutes` | int \| `null` | |
+| `timer_started_at` | timestamp \| `null` | |
+| `ends_at` | timestamp \| `null` | |
+| `extended_count` | int | |
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `VALIDATION_ERROR` | `{"id": "INVALID_FORMAT"}` |
+| 403 | `FORBIDDEN` | The caller isn't in the room, or the room doesn't exist |
 
 ### `GET /tasks/me`
 
@@ -827,13 +884,30 @@ in the meantime shift offsets, so de-duplicate by `id`.
 Absent or `null` fields are unchanged; at least one must be present.
 Completing a task whose timer is `running` or `prompting` ends the timer
 (`timer_status: "ended"`), and the room gets `timer_ended` with reason
-`completed`. Tasks can't be deleted.
+`completed`. Every successful call sends `task_updated` to the room.
 
 `200 OK`: the task object.
 
 | Status | Code | When |
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | `{"id": "INVALID_FORMAT"}`; no field present ("no fields to update"); `{"text": "REQUIRED"}`; `{"text": "TOO_LONG"}` |
+| 403 | `FORBIDDEN` | Not the owner |
+| 404 | `NOT_FOUND` | No such task |
+
+### `DELETE /tasks/{id}`
+
+| | |
+|---|---|
+| Auth | required, task owner only |
+| Body | none |
+
+Deletes the task and stops its timer if it is `running` or `prompting`; the
+owner stays in the room. `204 No Content`. The room gets `task_deleted`, and no
+`timer_ended`.
+
+| Status | Code | When |
+|---|---|---|
+| 400 | `VALIDATION_ERROR` | `{"id": "INVALID_FORMAT"}` |
 | 403 | `FORBIDDEN` | Not the owner |
 | 404 | `NOT_FOUND` | No such task |
 
@@ -854,7 +928,7 @@ is `running` or `prompting` (one active timer per user). A timer that has
 `ended` can be started again.
 
 `200 OK`: the task object (`timer_status: "running"`). The room gets
-`timer_started`.
+`timer_started` and `task_updated`.
 
 | Status | Code | When |
 |---|---|---|
@@ -874,17 +948,18 @@ Answers the extension prompt with "more time". Only valid while
 
 | Field | Type | Required | Rules |
 |---|---|---|---|
-| `minutes` | int | yes | `15` or `30` |
+| `minutes` | int | yes | One of `EXTENSION_OPTIONS` (default `5`, `10`, `15`) |
 
 `200 OK`: the task object (`timer_status: "running"`, `extended_count` + 1,
-new `timer_ends_at` = now + `minutes`). The room gets `task_extended`.
+new `timer_ends_at` = now + `minutes`). The room gets `task_extended` and
+`task_updated`.
 
 | Status | Code | When |
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | `{"id": "INVALID_FORMAT"}`; `{"minutes": "INVALID_VALUE"}` |
 | 403 | `FORBIDDEN` | Not the owner |
 | 404 | `NOT_FOUND` | No such task |
-| 409 | `EXTEND_LIMIT_REACHED` | The task already has `EXTENSION_MAX_COUNT` extensions |
+| 409 | `EXTEND_LIMIT_REACHED` | The task already has `EXTENSION_MAX_COUNT` extensions, or `minutes` would take it over `EXTENSION_MAX_TOTAL_MINUTES` |
 | 409 | `CONFLICT` | Not prompting; the prompt was already answered or has expired |
 
 ### `POST /tasks/{id}/no-extend`
@@ -1108,12 +1183,14 @@ Event details are in [ws-protocol.md](ws-protocol.md#5-events).
 | Constant | Value | Configurable |
 |---|---|---|
 | Focus durations | 25, 50, 90 min | no |
-| Extension lengths | 15, 30 min | no |
+| Extension lengths | 5, 10, 15 min | `EXTENSION_OPTIONS` |
 | Max extensions per task | 3 | `EXTENSION_MAX_COUNT` |
+| Max extra minutes per task | 30 | `EXTENSION_MAX_TOTAL_MINUTES` |
 | Prompt timeout | 60 s | `EXTENSION_PROMPT_TIMEOUT` |
 | Active timers per user | 1 (`running` or `prompting`) | no |
 
-At the limit the prompt is still sent, with `extensions_left: 0` and an empty
+`allowed_minutes` leaves out options that would exceed the total. When nothing
+is left the prompt is still sent, with `extensions_left: 0` and an empty
 `allowed_minutes`. The only answers left are `no-extend` or letting the
 prompt time out.
 
@@ -1146,9 +1223,11 @@ prompt time out.
 | POST | `/rooms/{id}/join` | Auth |
 | POST | `/rooms/{id}/leave` | Auth |
 | GET | `/rooms/{id}/participants` | Auth + in room |
-| POST | `/rooms/{id}/tasks` | Auth |
+| POST | `/rooms/{id}/tasks` | Auth (+ in room with `duration_minutes`) |
+| GET | `/rooms/{id}/tasks` | Auth + in room |
 | GET | `/tasks/me` | Auth |
 | PATCH | `/tasks/{id}` | Auth (owner) |
+| DELETE | `/tasks/{id}` | Auth (owner) |
 | POST | `/tasks/{id}/start` | Auth (owner, in room) |
 | POST | `/tasks/{id}/extend` | Auth (owner) |
 | POST | `/tasks/{id}/no-extend` | Auth (owner) |

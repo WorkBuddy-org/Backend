@@ -25,6 +25,13 @@ type Task struct {
 	PromptDeadlineAt     *time.Time
 }
 
+// RoomTask is a task with its author, as the room's task list shows it.
+type RoomTask struct {
+	Task
+	AuthorName      string
+	AuthorAvatarURL *string
+}
+
 // Values of tasks.timer_status.
 const (
 	TimerIdle      = "idle"
