@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/workbuddy/backend/internal/platform/httpx"
@@ -18,6 +16,8 @@ import (
 type Handler struct {
 	service         *Service
 	registerLimiter *ratelimit.FixedWindow
+	cookies         CookieConfig
+	origins         *httpx.Origins
 }
 
 func NewHandler(service *Service) *Handler {
@@ -28,6 +28,18 @@ func NewHandler(service *Service) *Handler {
 // default) disables the limit.
 func (h *Handler) SetRegisterLimiter(l *ratelimit.FixedWindow) {
 	h.registerLimiter = l
+}
+
+// SetCookieConfig sets the attributes of the auth cookies.
+func (h *Handler) SetCookieConfig(c CookieConfig) {
+	h.cookies = c
+}
+
+// SetAllowedOrigins sets the origins that may call POST /auth/refresh and
+// POST /auth/logout, which are authenticated by the refresh cookie. With none
+// set, such requests carrying an Origin header are rejected.
+func (h *Handler) SetAllowedOrigins(origins *httpx.Origins) {
+	h.origins = origins
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *Middleware) {
@@ -57,18 +69,24 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-type refreshRequest struct {
-	RefreshToken string `json:"refresh_token"`
-}
-
-type logoutRequest struct {
-	RefreshToken string `json:"refresh_token"`
-}
-
 type meResponse struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
 	Name  string `json:"name"`
+}
+
+// authResponse is the body of register and login; the tokens travel only in
+// cookies.
+type authResponse struct {
+	User meResponse `json:"user"`
+}
+
+func toMeResponse(u *user.User) meResponse {
+	return meResponse{
+		ID:    u.ID.String(),
+		Email: u.Email,
+		Name:  u.Name,
+	}
 }
 
 func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
@@ -104,73 +122,84 @@ func (h *Handler) startOAuth(w http.ResponseWriter, r *http.Request, providerNam
 	http.Redirect(w, r, provider.AuthCodeURL(state), http.StatusFound)
 }
 
+// completeOAuth always ends in a redirect to FRONTEND_CALLBACK_URL: with
+// ?status=ok and the auth cookies set on success, or ?error=<CODE> on any
+// failure. Tokens never appear in the URL.
 func (h *Handler) completeOAuth(w http.ResponseWriter, r *http.Request, providerName user.OAuthProvider) {
+	pair, code := h.oauthTokens(r, w, providerName)
+
+	query := url.Values{}
+	if code != "" {
+		query.Set("error", string(code))
+	} else {
+		query.Set("status", "ok")
+	}
+	target, err := frontendRedirect(h.service.FrontendCallbackURL(), query)
+	if err != nil {
+		httpx.Internal(w, "build frontend redirect failed", err, "provider", providerName)
+		return
+	}
+
+	if pair != nil {
+		h.cookies.setAuthCookies(w, pair, h.service.RefreshTTL())
+	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// oauthTokens runs the provider callback and returns a token pair for the
+// signed-in user, or the error code to send the frontend. Failures are logged
+// here; the redirect only carries the code.
+func (h *Handler) oauthTokens(r *http.Request, w http.ResponseWriter, providerName user.OAuthProvider) (*TokenPair, httpx.Code) {
 	provider, err := h.service.OAuthRegistry().Provider(providerName)
 	if err != nil {
-		writeProviderError(w, providerName, err)
-		return
+		if errors.Is(err, ErrOAuthNotConfigured) {
+			return nil, httpx.CodeServiceUnavailable
+		}
+		slog.Error("oauth provider lookup failed", "provider", providerName, "error", err)
+		return nil, httpx.CodeInternal
 	}
 
-	if errMsg := r.URL.Query().Get("error"); errMsg != "" {
-		httpx.Forbidden(w, "oauth authorization denied")
-		return
+	if r.URL.Query().Get("error") != "" {
+		return nil, httpx.CodeForbidden
 	}
 
-	state := r.URL.Query().Get("state")
-	if !validateOAuthState(r, provider, state) {
-		httpx.Forbidden(w, ErrInvalidOAuthState.Error())
-		return
+	if !validateOAuthState(r, provider, r.URL.Query().Get("state")) {
+		return nil, httpx.CodeForbidden
 	}
 	clearOAuthStateCookie(w, provider)
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		httpx.Validation(w, "missing authorization code", httpx.Fields{"code": httpx.FieldRequired})
-		return
+		return nil, httpx.CodeValidation
 	}
 
 	token, err := provider.Exchange(r.Context(), code)
 	if err != nil {
 		slog.Error("oauth token exchange failed", "provider", providerName, "error", err)
-		httpx.Error(w, http.StatusBadGateway, httpx.CodeInternal, "oauth token exchange failed")
-		return
+		return nil, httpx.CodeInternal
 	}
 
 	profile, err := provider.FetchProfile(r.Context(), token)
 	if err != nil {
 		slog.Error("oauth profile fetch failed", "provider", providerName, "error", err)
-		httpx.Error(w, http.StatusBadGateway, httpx.CodeInternal, "failed to fetch oauth profile")
-		return
+		return nil, httpx.CodeInternal
 	}
 
 	u, err := h.service.AuthenticateOAuthUser(r.Context(), profile)
 	if err != nil {
 		if errors.Is(err, ErrDuplicateEmail) {
-			httpx.Error(w, http.StatusConflict, httpx.CodeEmailExists, err.Error())
-			return
+			return nil, httpx.CodeEmailExists
 		}
-		httpx.Internal(w, "oauth user lookup failed", err, "provider", providerName)
-		return
+		slog.Error("oauth user lookup failed", "provider", providerName, "error", err)
+		return nil, httpx.CodeInternal
 	}
 
 	pair, err := h.service.IssueTokenPair(r.Context(), u)
 	if err != nil {
-		httpx.Internal(w, "issue token pair failed", err)
-		return
+		slog.Error("issue token pair failed", "provider", providerName, "error", err)
+		return nil, httpx.CodeInternal
 	}
-
-	if wantsJSON(r) {
-		httpx.JSON(w, http.StatusOK, pair)
-		return
-	}
-
-	redirectURL, err := buildFrontendRedirect(h.service.FrontendCallbackURL(), pair)
-	if err != nil {
-		httpx.Internal(w, "build frontend redirect failed", err)
-		return
-	}
-
-	http.Redirect(w, r, redirectURL, http.StatusFound)
+	return pair, ""
 }
 
 // writeProviderError answers an OAuth request for a provider that cannot be
@@ -209,13 +238,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pair, err := h.service.IssueTokenPair(r.Context(), u)
-	if err != nil {
-		httpx.Internal(w, "issue token pair failed", err)
-		return
-	}
-
-	httpx.JSON(w, http.StatusCreated, pair)
+	h.signIn(w, r, u, http.StatusCreated)
 }
 
 // allowRegister counts a registration request for the client IP and writes
@@ -262,29 +285,41 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.signIn(w, r, u, http.StatusOK)
+}
+
+// signIn issues a token pair for u, stores it in the auth cookies and answers
+// {"user": ...} with status.
+func (h *Handler) signIn(w http.ResponseWriter, r *http.Request, u *user.User, status int) {
 	pair, err := h.service.IssueTokenPair(r.Context(), u)
 	if err != nil {
 		httpx.Internal(w, "issue token pair failed", err)
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, pair)
+	h.cookies.setAuthCookies(w, pair, h.service.RefreshTTL())
+	httpx.JSON(w, status, authResponse{User: toMeResponse(u)})
 }
 
+// refresh rotates the refresh token from the refresh cookie and sets fresh
+// cookies. Any request body is ignored.
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
-	var req refreshRequest
-	if err := httpx.DecodeJSON(r, &req); err != nil {
-		httpx.DecodeError(w, err)
-		return
-	}
-	if req.RefreshToken == "" {
-		httpx.Validation(w, "refresh_token is required", httpx.Fields{"refresh_token": httpx.FieldRequired})
+	if !originAllowed(r, h.origins) {
+		httpx.Forbidden(w, "origin not allowed")
 		return
 	}
 
-	pair, err := h.service.Refresh(r.Context(), req.RefreshToken)
+	raw := refreshTokenFromCookie(r)
+	if raw == "" {
+		h.cookies.clearAuthCookies(w)
+		httpx.Unauthorized(w, "missing refresh token")
+		return
+	}
+
+	pair, err := h.service.Refresh(r.Context(), raw)
 	if err != nil {
 		if isRefreshRejected(err) {
+			h.cookies.clearAuthCookies(w)
 			httpx.Unauthorized(w, err.Error())
 			return
 		}
@@ -292,7 +327,8 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, pair)
+	h.cookies.setAuthCookies(w, pair, h.service.RefreshTTL())
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // isRefreshRejected reports whether a Refresh error is the client's refresh
@@ -301,27 +337,32 @@ func isRefreshRejected(err error) bool {
 	return errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrTokenExpired) || errors.Is(err, ErrTokenRevoked)
 }
 
+// logout revokes the refresh cookie's token, if any, and clears both
+// cookies. It succeeds without a cookie or with an already unknown token, so
+// it is always safe to call.
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
-	var req logoutRequest
-	if err := httpx.DecodeJSON(r, &req); err != nil {
-		httpx.DecodeError(w, err)
-		return
-	}
-	if req.RefreshToken == "" {
-		httpx.Validation(w, "refresh_token is required", httpx.Fields{"refresh_token": httpx.FieldRequired})
+	if !originAllowed(r, h.origins) {
+		httpx.Forbidden(w, "origin not allowed")
 		return
 	}
 
-	if err := h.service.Logout(r.Context(), req.RefreshToken); err != nil {
-		if errors.Is(err, ErrInvalidToken) {
-			httpx.Unauthorized(w, err.Error())
+	h.cookies.clearAuthCookies(w)
+
+	if raw := refreshTokenFromCookie(r); raw != "" {
+		if err := h.service.Logout(r.Context(), raw); err != nil && !errors.Is(err, ErrInvalidToken) {
+			httpx.Internal(w, "logout failed", err)
 			return
 		}
-		httpx.Internal(w, "logout failed", err)
-		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func refreshTokenFromCookie(r *http.Request) string {
+	if c, err := r.Cookie(RefreshTokenCookie); err == nil {
+		return c.Value
+	}
+	return ""
 }
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
@@ -344,11 +385,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, meResponse{
-		ID:    u.ID.String(),
-		Email: u.Email,
-		Name:  u.Name,
-	})
+	httpx.JSON(w, http.StatusOK, toMeResponse(u))
 }
 
 func setOAuthStateCookie(w http.ResponseWriter, provider *OAuthProvider, state string) {
@@ -388,7 +425,8 @@ func validateOAuthState(r *http.Request, provider *OAuthProvider, state string) 
 	return cookie.Value != "" && cookie.Value == state
 }
 
-func buildFrontendRedirect(baseURL string, pair *TokenPair) (string, error) {
+// frontendRedirect returns baseURL with query merged into its query string.
+func frontendRedirect(baseURL string, query url.Values) (string, error) {
 	if baseURL == "" {
 		return "", fmt.Errorf("frontend callback url is empty")
 	}
@@ -399,15 +437,10 @@ func buildFrontendRedirect(baseURL string, pair *TokenPair) (string, error) {
 	}
 
 	q := u.Query()
-	q.Set("access_token", pair.AccessToken)
-	q.Set("refresh_token", pair.RefreshToken)
-	q.Set("expires_in", strconv.FormatInt(pair.ExpiresIn, 10))
+	for k, vs := range query {
+		q[k] = vs
+	}
 	u.RawQuery = q.Encode()
 
 	return u.String(), nil
-}
-
-func wantsJSON(r *http.Request) bool {
-	accept := r.Header.Get("Accept")
-	return strings.Contains(accept, "application/json")
 }

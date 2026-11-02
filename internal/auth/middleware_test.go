@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/workbuddy/backend/internal/platform/httpx"
 )
 
 func TestRequireAuthErrorCodes(t *testing.T) {
@@ -64,6 +65,53 @@ func TestRequireAuthErrorCodes(t *testing.T) {
 			}
 			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error.Code != tt.wantCode {
 				t.Fatalf("expected code %s, got %s", tt.wantCode, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestRequireAuthOriginCheck(t *testing.T) {
+	tokens := NewTokenManager("test-secret", time.Minute)
+	tok, err := tokens.IssueAccessToken(uuid.New(), "dev@example.com")
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	mw := NewMiddleware(tokens)
+	mw.SetAllowedOrigins(httpx.NewOrigins([]string{"http://localhost:3000"}))
+	h := mw.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	tests := []struct {
+		name       string
+		method     string
+		cookie     bool
+		origin     string
+		wantStatus int
+	}{
+		{name: "cookie, allowed origin", method: http.MethodPost, cookie: true, origin: "http://localhost:3000", wantStatus: http.StatusNoContent},
+		{name: "cookie, no origin", method: http.MethodPatch, cookie: true, wantStatus: http.StatusNoContent},
+		{name: "cookie, foreign origin", method: http.MethodPost, cookie: true, origin: "https://evil.example.com", wantStatus: http.StatusForbidden},
+		{name: "cookie, foreign origin, delete", method: http.MethodDelete, cookie: true, origin: "https://evil.example.com", wantStatus: http.StatusForbidden},
+		{name: "cookie, foreign origin, safe method", method: http.MethodGet, cookie: true, origin: "https://evil.example.com", wantStatus: http.StatusNoContent},
+		{name: "bearer, foreign origin", method: http.MethodPost, origin: "https://evil.example.com", wantStatus: http.StatusNoContent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/", nil)
+			if tt.cookie {
+				req.AddCookie(&http.Cookie{Name: AccessTokenCookie, Value: tok})
+			} else {
+				req.Header.Set("Authorization", "Bearer "+tok)
+			}
+			if tt.origin != "" {
+				req.Header.Set("Origin", tt.origin)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d: %s", tt.wantStatus, rec.Code, rec.Body.String())
 			}
 		})
 	}

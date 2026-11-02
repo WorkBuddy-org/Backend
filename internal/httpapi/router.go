@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/workbuddy/backend/internal/auth"
@@ -41,7 +42,14 @@ type RouterDeps struct {
 	// TrustedProxyHeader, when set, names the header whose first value is
 	// used as the client IP (see httpx.TrustedProxy).
 	TrustedProxyHeader string
+
+	// CORSAllowedOrigins are the browser origins allowed to call the API
+	// with credentials. Empty disables CORS: cross-origin browser calls fail.
+	CORSAllowedOrigins []string
 }
+
+// corsMaxAge is how long browsers may cache a preflight answer, in seconds.
+const corsMaxAge = 300
 
 func NewRouter(deps RouterDeps) http.Handler {
 	r := chi.NewRouter()
@@ -49,6 +57,18 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.Use(httpx.TrustedProxy(deps.TrustedProxyHeader))
 	r.Use(middleware.RequestID)
 	r.Use(httpx.Recoverer)
+	// cors treats an empty origin list as "allow all", so it is only mounted
+	// with an explicit list.
+	if len(deps.CORSAllowedOrigins) > 0 {
+		r.Use(cors.Handler(cors.Options{
+			AllowedOrigins:   deps.CORSAllowedOrigins,
+			AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodDelete, http.MethodOptions},
+			AllowedHeaders:   []string{"Content-Type", "Authorization"},
+			ExposedHeaders:   []string{"Retry-After"},
+			AllowCredentials: true,
+			MaxAge:           corsMaxAge,
+		}))
+	}
 	r.NotFound(httpx.NotFoundHandler)
 	r.MethodNotAllowed(httpx.MethodNotAllowedHandler)
 

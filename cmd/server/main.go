@@ -14,6 +14,7 @@ import (
 	"github.com/workbuddy/backend/internal/config"
 	"github.com/workbuddy/backend/internal/httpapi"
 	"github.com/workbuddy/backend/internal/invite"
+	"github.com/workbuddy/backend/internal/platform/httpx"
 	"github.com/workbuddy/backend/internal/platform/postgres"
 	"github.com/workbuddy/backend/internal/platform/ratelimit"
 	"github.com/workbuddy/backend/internal/platform/redis"
@@ -129,7 +130,16 @@ func main() {
 		chatLimiter = chat.NewRedisRateLimiter(redisClient, cfg.ChatRateLimit, cfg.ChatRateWindow, "")
 	}
 
+	corsOrigins := httpx.NewOrigins(cfg.CORSAllowedOrigins)
+	if len(corsOrigins.List()) == 0 {
+		slog.Warn("CORS_ALLOWED_ORIGINS is empty: cross-origin browser requests and cookie-authenticated writes with an Origin header will be rejected")
+	}
+
 	authHandler := auth.NewHandler(authService)
+	authHandler.SetCookieConfig(auth.CookieConfig{Secure: cfg.CookieSecure, Domain: cfg.CookieDomain})
+	authHandler.SetAllowedOrigins(corsOrigins)
+	authMW := auth.NewMiddleware(tokenManager)
+	authMW.SetAllowedOrigins(corsOrigins)
 	if cfg.RegisterRateLimit > 0 {
 		authHandler.SetRegisterLimiter(ratelimit.NewFixedWindow(redisClient, cfg.RegisterRateLimit, cfg.RegisterRateWindow))
 	}
@@ -141,7 +151,7 @@ func main() {
 		DB:             db,
 		Redis:          redisClient,
 		AuthHandler:    authHandler,
-		AuthMW:         auth.NewMiddleware(tokenManager),
+		AuthMW:         authMW,
 		RoomHandler:    room.NewHandler(roomService),
 		InviteHandler:  invite.NewHandler(inviteService),
 		TaskHandler:    task.NewHandler(taskService),
@@ -151,6 +161,7 @@ func main() {
 		CallHandler:    call.NewHandler(callService),
 
 		TrustedProxyHeader: cfg.TrustedProxyHeader,
+		CORSAllowedOrigins: corsOrigins.List(),
 	})
 	addr := ":" + cfg.Port
 	srv := server.New(addr, router)

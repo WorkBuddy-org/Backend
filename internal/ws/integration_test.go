@@ -88,6 +88,37 @@ func TestWebSocketHandshakeRejections(t *testing.T) {
 	}
 }
 
+func TestWebSocketHandshakeWithCookie(t *testing.T) {
+	e := newTestEnv(t, ws.Config{AllowedOrigins: []string{allowedOrigin}})
+
+	roomID := e.createRoom()
+	member, memberToken := e.createUser("Cookie Member")
+	e.joinREST(roomID, memberToken)
+	path := "/rooms/" + roomID.String() + "/ws"
+
+	// Browsers send the access_token cookie on the upgrade; no query needed.
+	conn, resp, err := e.dialCookie(path, memberToken, allowedOrigin)
+	if err != nil {
+		t.Fatalf("expected cookie handshake to connect: %v (%+v)", err, resp)
+	}
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+
+	// The cookie wins over the query parameter.
+	conn, resp, err = e.dialCookieAndQuery(path, memberToken, "garbage")
+	if err != nil {
+		t.Fatalf("expected cookie to take precedence over ?access_token=: %v (%+v)", err, resp)
+	}
+	_ = conn.Close(websocket.StatusNormalClosure, "")
+
+	expired, err := auth.NewTokenManager(os.Getenv("JWT_SECRET"), -time.Minute).IssueAccessToken(member.ID, member.Email)
+	if err != nil {
+		t.Fatalf("issue expired token: %v", err)
+	}
+	if _, resp, err := e.dialCookie(path, expired, allowedOrigin); err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an expired cookie, got %+v (err %v)", resp, err)
+	}
+}
+
 func TestWebSocketPresenceSnapshotOnConnect(t *testing.T) {
 	e := newTestEnv(t, ws.Config{})
 
@@ -740,4 +771,32 @@ func equalIDs(members []string, ids ...uuid.UUID) bool {
 	sort.Strings(got)
 	sort.Strings(want)
 	return strings.Join(got, ",") == strings.Join(want, ",")
+}
+
+// dialCookie opens the socket with the token in the access_token cookie, as a
+// browser does after cookie login.
+func (e *testEnv) dialCookie(path, token, origin string) (*websocket.Conn, *http.Response, error) {
+	h := http.Header{}
+	h.Set("Cookie", (&http.Cookie{Name: auth.AccessTokenCookie, Value: token}).String())
+	if origin != "" {
+		h.Set("Origin", origin)
+	}
+	return e.dialURL("ws"+strings.TrimPrefix(e.server.URL, "http")+path, h)
+}
+
+// dialCookieAndQuery sends one token in the cookie and another in the query.
+func (e *testEnv) dialCookieAndQuery(path, cookieToken, queryToken string) (*websocket.Conn, *http.Response, error) {
+	h := http.Header{}
+	h.Set("Cookie", (&http.Cookie{Name: auth.AccessTokenCookie, Value: cookieToken}).String())
+	return e.dialURL("ws"+strings.TrimPrefix(e.server.URL, "http")+path+"?access_token="+queryToken, h)
+}
+
+func (e *testEnv) dialURL(url string, h http.Header) (*websocket.Conn, *http.Response, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: h})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	return conn, resp, err
 }

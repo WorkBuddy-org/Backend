@@ -10,6 +10,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// DefaultDevFrontendOrigin is the CORS origin allowed in development when
+// CORS_ALLOWED_ORIGINS is empty: the Next.js dev server.
+const DefaultDevFrontendOrigin = "http://localhost:3000"
+
 type Config struct {
 	Port string
 	Env  string
@@ -36,6 +40,20 @@ type Config struct {
 	// WSAllowedOrigins lists browser origins (scheme://host[:port]) allowed to
 	// open WebSockets. Empty means any origin, but only when Env is development.
 	WSAllowedOrigins []string
+
+	// CORSAllowedOrigins are the browser origins (scheme://host[:port]) allowed
+	// to call the API with credentials. Cookie-authenticated writes from any
+	// other Origin are rejected. Empty in development means
+	// DefaultDevFrontendOrigin.
+	CORSAllowedOrigins []string
+
+	// CookieSecure marks the auth cookies Secure. It defaults to true when Env
+	// is production; COOKIE_SECURE overrides it.
+	CookieSecure bool
+	// CookieDomain is the Domain attribute of the auth cookies, e.g.
+	// ".example.com" to share them between app. and api. subdomains. Empty
+	// means host-only cookies.
+	CookieDomain string
 
 	// ExtensionPromptTimeout is how long a user has to answer the task
 	// extension prompt before being removed from the room.
@@ -92,7 +110,9 @@ func Load() (*Config, error) {
 
 		FrontendCallbackURL: getEnv("FRONTEND_CALLBACK_URL", ""),
 
-		WSAllowedOrigins: splitList(getEnv("WS_ALLOWED_ORIGINS", "")),
+		WSAllowedOrigins:   splitList(getEnv("WS_ALLOWED_ORIGINS", "")),
+		CORSAllowedOrigins: splitList(getEnv("CORS_ALLOWED_ORIGINS", "")),
+		CookieDomain:       strings.TrimSpace(getEnv("COOKIE_DOMAIN", "")),
 
 		TrustedProxyHeader: strings.TrimSpace(getEnv("TRUSTED_PROXY_HEADER", "")),
 
@@ -140,6 +160,18 @@ func Load() (*Config, error) {
 	cfg.RegisterRateWindow, err = time.ParseDuration(getEnv("REGISTER_RATE_WINDOW", "10m"))
 	if err != nil || cfg.RegisterRateWindow < time.Millisecond {
 		return nil, fmt.Errorf("parse REGISTER_RATE_WINDOW: must be a positive duration such as 10m")
+	}
+
+	cfg.CookieSecure = cfg.Env == "production"
+	if raw := strings.TrimSpace(os.Getenv("COOKIE_SECURE")); raw != "" {
+		cfg.CookieSecure, err = strconv.ParseBool(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse COOKIE_SECURE: must be true or false")
+		}
+	}
+
+	if len(cfg.CORSAllowedOrigins) == 0 && cfg.Env == "development" {
+		cfg.CORSAllowedOrigins = []string{DefaultDevFrontendOrigin}
 	}
 
 	if cfg.DatabaseURL == "" {
