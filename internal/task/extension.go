@@ -12,19 +12,57 @@ import (
 	"github.com/workbuddy/backend/internal/ws"
 )
 
-// ExtensionMinutes are the allowed minutes for POST /tasks/{id}/extend.
-var ExtensionMinutes = []int{15, 30}
-
 const (
-	DefaultExtensionPromptTimeout = 60 * time.Second
-	DefaultExtensionMaxCount      = 3
+	DefaultExtensionPromptTimeout   = 60 * time.Second
+	DefaultExtensionMaxCount        = 3
+	DefaultExtensionMaxTotalMinutes = 30
 )
+
+// DefaultExtensionOptions are the minutes offered by the prompt.
+var DefaultExtensionOptions = []int{5, 10, 15}
 
 type ExtensionConfig struct {
 	// PromptTimeout is how long the owner has to answer the prompt.
 	PromptTimeout time.Duration
 	// MaxCount caps extensions per task.
 	MaxCount int
+	// Options are the minutes POST /tasks/{id}/extend accepts.
+	Options []int
+	// MaxTotalMinutes caps the extra minutes per task, over all extensions.
+	MaxTotalMinutes int
+}
+
+// withDefaults fills in zero values. A config left entirely zero also gets
+// DefaultExtensionMaxCount; otherwise MaxCount 0 means no extensions.
+func (c ExtensionConfig) withDefaults() ExtensionConfig {
+	if c.PromptTimeout == 0 && c.MaxCount == 0 && len(c.Options) == 0 && c.MaxTotalMinutes == 0 {
+		c.MaxCount = DefaultExtensionMaxCount
+	}
+	if c.PromptTimeout == 0 {
+		c.PromptTimeout = DefaultExtensionPromptTimeout
+	}
+	if len(c.Options) == 0 {
+		c.Options = DefaultExtensionOptions
+	}
+	if c.MaxTotalMinutes == 0 {
+		c.MaxTotalMinutes = DefaultExtensionMaxTotalMinutes
+	}
+	return c
+}
+
+// allowedMinutes returns the options the task can still use: none once the
+// count limit is reached, and none that would exceed the total minutes.
+func (c ExtensionConfig) allowedMinutes(t *Task) []int {
+	allowed := []int{}
+	if t.ExtendedCount >= c.MaxCount {
+		return allowed
+	}
+	for _, minutes := range c.Options {
+		if t.ExtraMinutesUsed+minutes <= c.MaxTotalMinutes {
+			allowed = append(allowed, minutes)
+		}
+	}
+	return allowed
 }
 
 // promptExtension is the default ExpiryHandler. It tells the room the timer
@@ -55,10 +93,10 @@ func (p promptExtension) TimerExpired(ctx context.Context, t *Task) {
 		slog.Error("failed to schedule extension prompt deadline", "task_id", t.ID, "error", err)
 	}
 
-	allowed := ExtensionMinutes
+	allowed := s.ext.allowedMinutes(prompted)
 	left := max(s.ext.MaxCount-prompted.ExtendedCount, 0)
-	if left == 0 {
-		allowed = []int{}
+	if len(allowed) == 0 {
+		left = 0
 	}
 	s.sendToUser(prompted.UserID, ws.NewEvent(ws.TypeTaskExtensionPrompt, prompted.RoomID, ws.TaskExtensionPromptData{
 		TaskID:         prompted.ID,
@@ -67,12 +105,13 @@ func (p promptExtension) TimerExpired(ctx context.Context, t *Task) {
 		ExtensionsLeft: left,
 		ServerTime:     ws.FormatTime(s.now()),
 	}))
+	s.publishTask(ctx, ws.TypeTaskUpdated, prompted)
 }
 
 // ExtendTimer answers the prompt with "more time": the timer runs again for
 // the given minutes from now.
 func (s *Service) ExtendTimer(ctx context.Context, taskID, userID uuid.UUID, minutes int) (*Task, error) {
-	if !slices.Contains(ExtensionMinutes, minutes) {
+	if !slices.Contains(s.ext.Options, minutes) {
 		return nil, ErrInvalidExtension
 	}
 
@@ -80,7 +119,7 @@ func (s *Service) ExtendTimer(ctx context.Context, taskID, userID uuid.UUID, min
 	if err != nil {
 		return nil, err
 	}
-	if existing.ExtendedCount >= s.ext.MaxCount {
+	if !slices.Contains(s.ext.allowedMinutes(existing), minutes) {
 		return nil, ErrExtensionLimit
 	}
 	now := s.now()
@@ -99,7 +138,7 @@ func (s *Service) ExtendTimer(ctx context.Context, taskID, userID uuid.UUID, min
 	}
 
 	endsAt := now.Add(time.Duration(minutes) * time.Minute)
-	t, err := s.repo.ExtendTimer(ctx, taskID, minutes, now, endsAt, s.ext.MaxCount)
+	t, err := s.repo.ExtendTimer(ctx, taskID, minutes, now, endsAt, s.ext.MaxCount, s.ext.MaxTotalMinutes)
 	if err != nil {
 		// Hand the deadline back so the prompt still ends.
 		s.reschedulePrompt(ctx, existing)
@@ -123,6 +162,7 @@ func (s *Service) ExtendTimer(ctx context.Context, taskID, userID uuid.UUID, min
 		EndsAt:           ws.FormatTime(endsAt),
 		ServerTime:       ws.FormatTime(s.now()),
 	}))
+	s.publishTask(ctx, ws.TypeTaskUpdated, t)
 	return t, nil
 }
 
@@ -179,6 +219,9 @@ func (s *Service) endPrompt(ctx context.Context, taskID uuid.UUID, dueBy *time.T
 	if err != nil {
 		return nil, err
 	}
+
+	// Published before the kick: the owner's tasks leave the room's list then.
+	s.publishTask(ctx, ws.TypeTaskUpdated, t)
 
 	if err := s.rooms.KickNoExtension(ctx, t.RoomID, t.UserID); err != nil && !errors.Is(err, room.ErrNotInRoom) {
 		slog.Error("failed to remove user after extension prompt", "task_id", t.ID, "room_id", t.RoomID, "error", err)

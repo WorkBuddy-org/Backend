@@ -14,8 +14,10 @@ var (
 	ErrNotInRoom       = errors.New("join the task's room before starting a timer")
 	ErrTimerActive     = errors.New("a timer is already running for this user")
 
-	ErrInvalidExtension = errors.New("minutes must be one of 15, 30")
+	ErrInvalidExtension = errors.New("minutes must be one of the configured extension options")
 	ErrNotPrompting     = errors.New("the task's timer is not waiting for an extension answer")
 	ErrPromptExpired    = errors.New("the extension prompt was already answered or has expired")
 	ErrExtensionLimit   = errors.New("extension limit reached for this task")
+
+	ErrNotParticipant = errors.New("join the room to see its tasks")
 )

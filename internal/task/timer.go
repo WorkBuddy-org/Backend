@@ -73,29 +73,39 @@ func (s *Service) StartTimer(ctx context.Context, taskID, userID uuid.UUID, minu
 		return nil, err
 	}
 
-	now := s.now()
+	s.broadcastTimerStarted(t, startedAt, endsAt, minutes)
+	s.publishTask(ctx, ws.TypeTaskUpdated, t)
+	return t, nil
+}
+
+func (s *Service) broadcastTimerStarted(t *Task, startedAt, endsAt time.Time, minutes int) {
 	s.broadcast(t.RoomID, ws.NewEvent(ws.TypeTimerStarted, t.RoomID, ws.TimerStartedData{
 		TaskID:          t.ID,
 		UserID:          t.UserID,
 		StartedAt:       ws.FormatTime(startedAt),
 		EndsAt:          ws.FormatTime(endsAt),
 		DurationMinutes: minutes,
-		ServerTime:      ws.FormatTime(now),
+		ServerTime:      ws.FormatTime(s.now()),
 	}))
-	return t, nil
 }
 
 // stopTimer drops a timer that was ended by completing its task.
 func (s *Service) stopTimer(ctx context.Context, t *Task) {
+	s.unschedule(ctx, t.ID)
+	s.broadcastTimerEnded(t, ws.TimerEndedCompleted)
+}
+
+// unschedule removes the task from both due sets.
+func (s *Service) unschedule(ctx context.Context, taskID uuid.UUID) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	for _, set := range []dueSet{s.index.timers, s.index.prompts} {
-		if err := set.unschedule(cleanupCtx, t.ID); err != nil {
-			// Harmless: the scheduler's conditional updates ignore ended timers.
-			slog.Error("failed to unschedule stopped timer", "task_id", t.ID, "error", err)
+		if err := set.unschedule(cleanupCtx, taskID); err != nil {
+			// Harmless: the scheduler's conditional updates ignore ended and
+			// deleted timers.
+			slog.Error("failed to unschedule stopped timer", "task_id", taskID, "error", err)
 		}
 	}
-	s.broadcastTimerEnded(t, ws.TimerEndedCompleted)
 }
 
 // RecoverTimers rebuilds the Redis index from Postgres. Timers and prompts

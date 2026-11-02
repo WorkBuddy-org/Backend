@@ -60,6 +60,10 @@ type Config struct {
 	ExtensionPromptTimeout time.Duration
 	// ExtensionMaxCount caps extensions per task.
 	ExtensionMaxCount int
+	// ExtensionOptions are the minutes a user may extend a timer by.
+	ExtensionOptions []int
+	// ExtensionMaxTotalMinutes caps the extra minutes per task.
+	ExtensionMaxTotalMinutes int
 
 	// ChatRateLimit is how many chat messages a user may send per
 	// ChatRateWindow; 0 disables the limit.
@@ -142,6 +146,16 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse EXTENSION_MAX_COUNT: must be a non-negative integer")
 	}
 
+	cfg.ExtensionOptions, err = parsePositiveInts(getEnv("EXTENSION_OPTIONS", "5,10,15"))
+	if err != nil {
+		return nil, fmt.Errorf("parse EXTENSION_OPTIONS: %w", err)
+	}
+
+	cfg.ExtensionMaxTotalMinutes, err = strconv.Atoi(getEnv("EXTENSION_MAX_TOTAL_MINUTES", "30"))
+	if err != nil || cfg.ExtensionMaxTotalMinutes <= 0 {
+		return nil, fmt.Errorf("parse EXTENSION_MAX_TOTAL_MINUTES: must be a positive integer")
+	}
+
 	cfg.ChatRateLimit, err = strconv.Atoi(getEnv("CHAT_RATE_LIMIT", "10"))
 	if err != nil || cfg.ChatRateLimit < 0 {
 		return nil, fmt.Errorf("parse CHAT_RATE_LIMIT: must be a non-negative integer")
@@ -197,6 +211,23 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// parsePositiveInts parses a comma-separated list of positive integers.
+func parsePositiveInts(raw string) ([]int, error) {
+	parts := splitList(raw)
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("must list at least one positive integer")
+	}
+	values := make([]int, len(parts))
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("%q is not a positive integer", part)
+		}
+		values[i] = n
+	}
+	return values, nil
 }
 
 // splitList parses a comma-separated value, dropping blank entries.

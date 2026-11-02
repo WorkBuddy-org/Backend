@@ -23,6 +23,9 @@ const (
 	TypeTaskExtended        = "task_extended"
 	TypeKicked              = "kicked"
 	TypeChatMessage         = "chat_message"
+	TypeTaskCreated         = "task_created"
+	TypeTaskUpdated         = "task_updated"
+	TypeTaskDeleted         = "task_deleted"
 )
 
 // LeftReasonDisconnect is the user_left reason when the user's last
@@ -142,6 +145,29 @@ type TaskExtendedData struct {
 	ExtraMinutesUsed int       `json:"extra_minutes_used"`
 	EndsAt           string    `json:"ends_at"`
 	ServerTime       string    `json:"server_time"`
+}
+
+// TaskAuthor is who a task belongs to.
+type TaskAuthor struct {
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	AvatarURL *string   `json:"avatar_url"`
+}
+
+// TaskEventData is the payload of task_created, task_updated and task_deleted:
+// a task as GET /rooms/{id}/tasks returns it, plus task_id and user_id.
+type TaskEventData struct {
+	TaskID          uuid.UUID  `json:"task_id"`
+	UserID          uuid.UUID  `json:"user_id"`
+	ID              uuid.UUID  `json:"id"`
+	Text            string     `json:"text"`
+	Author          TaskAuthor `json:"author"`
+	Completed       bool       `json:"completed"`
+	TimerStatus     string     `json:"timer_status"`
+	DurationMinutes *int       `json:"duration_minutes"`
+	TimerStartedAt  *string    `json:"timer_started_at"`
+	EndsAt          *string    `json:"ends_at"`
+	ExtendedCount   int        `json:"extended_count"`
 }
 
 type KickedData struct {

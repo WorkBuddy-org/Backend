@@ -102,8 +102,10 @@ func main() {
 		Index:  task.NewTimerIndex(redisClient, ""),
 		Events: wsHub,
 		Extension: task.ExtensionConfig{
-			PromptTimeout: cfg.ExtensionPromptTimeout,
-			MaxCount:      cfg.ExtensionMaxCount,
+			PromptTimeout:   cfg.ExtensionPromptTimeout,
+			MaxCount:        cfg.ExtensionMaxCount,
+			Options:         cfg.ExtensionOptions,
+			MaxTotalMinutes: cfg.ExtensionMaxTotalMinutes,
 		},
 	})
 

@@ -25,7 +25,9 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *auth.Middleware) 
 	r.Group(func(r chi.Router) {
 		r.Use(authMiddleware.RequireAuth)
 		r.Post("/rooms/{id}/tasks", h.create)
+		r.Get("/rooms/{id}/tasks", h.listRoom)
 		r.Patch("/tasks/{id}", h.update)
+		r.Delete("/tasks/{id}", h.delete)
 		r.Post("/tasks/{id}/start", h.startTimer)
 		r.Post("/tasks/{id}/extend", h.extendTimer)
 		r.Post("/tasks/{id}/no-extend", h.declineExtension)
@@ -72,7 +74,44 @@ func toTaskDTO(t *Task) taskDTO {
 }
 
 type createRequest struct {
-	Text string `json:"text"`
+	Text            string `json:"text"`
+	DurationMinutes *int   `json:"duration_minutes"`
+}
+
+type taskAuthorDTO struct {
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	AvatarURL *string   `json:"avatar_url"`
+}
+
+type roomTaskDTO struct {
+	ID              uuid.UUID     `json:"id"`
+	Text            string        `json:"text"`
+	Author          taskAuthorDTO `json:"author"`
+	Completed       bool          `json:"completed"`
+	TimerStatus     string        `json:"timer_status"`
+	DurationMinutes *int          `json:"duration_minutes"`
+	TimerStartedAt  *time.Time    `json:"timer_started_at"`
+	EndsAt          *time.Time    `json:"ends_at"`
+	ExtendedCount   int           `json:"extended_count"`
+}
+
+type roomTaskListResponse struct {
+	Items []roomTaskDTO `json:"items"`
+}
+
+func toRoomTaskDTO(t *RoomTask) roomTaskDTO {
+	return roomTaskDTO{
+		ID:              t.ID,
+		Text:            t.Text,
+		Author:          taskAuthorDTO{ID: t.UserID, Name: t.AuthorName, AvatarURL: t.AuthorAvatarURL},
+		Completed:       t.CompletedAt != nil,
+		TimerStatus:     t.TimerStatus,
+		DurationMinutes: t.TimerDurationMinutes,
+		TimerStartedAt:  t.TimerStartedAt,
+		EndsAt:          t.TimerEndsAt,
+		ExtendedCount:   t.ExtendedCount,
+	}
 }
 
 type updateRequest struct {
@@ -99,13 +138,65 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t, err := h.service.Create(r.Context(), roomID, userID, req.Text)
+	var t *Task
+	if req.DurationMinutes != nil {
+		t, err = h.service.CreateWithTimer(r.Context(), roomID, userID, req.Text, *req.DurationMinutes)
+	} else {
+		t, err = h.service.Create(r.Context(), roomID, userID, req.Text)
+	}
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 
 	httpx.JSON(w, http.StatusCreated, toTaskDTO(t))
+}
+
+func (h *Handler) listRoom(w http.ResponseWriter, r *http.Request) {
+	roomID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.InvalidPathID(w, "room")
+		return
+	}
+
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Unauthorized(w, "missing user context")
+		return
+	}
+
+	tasks, err := h.service.ListByRoom(r.Context(), roomID, userID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+
+	dtos := make([]roomTaskDTO, len(tasks))
+	for i := range tasks {
+		dtos[i] = toRoomTaskDTO(&tasks[i])
+	}
+	httpx.JSON(w, http.StatusOK, roomTaskListResponse{Items: dtos})
+}
+
+func (h *Handler) delete(w http.ResponseWriter, r *http.Request) {
+	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.InvalidPathID(w, "task")
+		return
+	}
+
+	userID, err := auth.CurrentUserID(r)
+	if err != nil {
+		httpx.Unauthorized(w, "missing user context")
+		return
+	}
+
+	if err := h.service.Delete(r.Context(), taskID, userID); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +330,7 @@ func writeError(w http.ResponseWriter, err error) {
 		httpx.Validation(w, err.Error(), httpx.Fields{"minutes": httpx.FieldInvalidValue})
 	case errors.Is(err, ErrTaskNotFound), errors.Is(err, room.ErrRoomNotFound):
 		httpx.NotFound(w, err.Error())
-	case errors.Is(err, ErrForbidden), errors.Is(err, ErrNotInRoom):
+	case errors.Is(err, ErrForbidden), errors.Is(err, ErrNotInRoom), errors.Is(err, ErrNotParticipant):
 		httpx.Forbidden(w, err.Error())
 	case errors.Is(err, ErrExtensionLimit):
 		httpx.Error(w, http.StatusConflict, httpx.CodeExtendLimitReached, err.Error())

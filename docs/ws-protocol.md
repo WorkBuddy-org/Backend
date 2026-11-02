@@ -170,6 +170,9 @@ participants (`GET /rooms/{id}/participants`) may have no socket open.
 | `task_extended` | broadcast: the room | `POST /tasks/{id}/extend` succeeded |
 | `kicked` | targeted: the removed user's sockets in this room | The server removed the user (declined or ignored the extension prompt) |
 | `chat_message` | broadcast: the room, sender's sockets included | `POST /rooms/{id}/messages` succeeded |
+| `task_created` | broadcast: the room | `POST /rooms/{id}/tasks` succeeded |
+| `task_updated` | broadcast: the room | The task was edited or completed, or its timer state changed |
+| `task_deleted` | broadcast: the room | `DELETE /tasks/{id}` succeeded |
 | `pong` | targeted: the socket that pinged | The client sent `{"type":"ping"}` (not a domain event) |
 
 "Broadcast" reaches every open socket of the room. Users without a socket
@@ -333,7 +336,7 @@ about 1 s after `ends_at`.
 Sent only to the task owner, right after `timer_ended` with reason
 `expired`. The owner answers over REST before `deadline`:
 
-- `POST /tasks/{task_id}/extend` with `{"minutes": 15 | 30}`: the timer runs
+- `POST /tasks/{task_id}/extend` with `{"minutes": <one of allowed_minutes>}`: the timer runs
   again (`task_extended` is broadcast).
 - `POST /tasks/{task_id}/no-extend`: the timer ends and the user is removed
   from the room (`kicked`).
@@ -349,7 +352,7 @@ Sent only to the task owner, right after `timer_ended` with reason
   "data": {
     "task_id": "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
     "deadline": "2026-10-20T13:26:00.010Z",
-    "allowed_minutes": [15, 30],
+    "allowed_minutes": [5, 10, 15],
     "extensions_left": 3,
     "server_time": "2026-10-20T13:25:00.020Z"
   }
@@ -360,8 +363,8 @@ Sent only to the task owner, right after `timer_ended` with reason
 |---|---|---|
 | `task_id` | UUID | |
 | `deadline` | timestamp | When the prompt was sent + `EXTENSION_PROMPT_TIMEOUT` (60 s); same as the task's `prompt_deadline_at` |
-| `allowed_minutes` | int[] | `[15, 30]`, or `[]` when no extensions are left |
-| `extensions_left` | int | `EXTENSION_MAX_COUNT` (3) minus `extended_count` |
+| `allowed_minutes` | int[] | `EXTENSION_OPTIONS` (default `[5, 10, 15]`) without the options that would take the task over `EXTENSION_MAX_TOTAL_MINUTES` (30). `[]` when nothing is left |
+| `extensions_left` | int | `EXTENSION_MAX_COUNT` (3) minus `extended_count`; `0` when `allowed_minutes` is empty |
 | `server_time` | timestamp | |
 
 If the owner has no socket in the room, the prompt is not delivered, but the
@@ -391,7 +394,7 @@ and `prompt_deadline_at`.
 |---|---|---|
 | `task_id` | UUID | |
 | `user_id` | UUID | Task owner |
-| `added_minutes` | int | 15 or 30 |
+| `added_minutes` | int | One of `EXTENSION_OPTIONS` |
 | `extended_count` | int | Task total after this extension |
 | `extra_minutes_used` | int | Task total after this extension |
 | `ends_at` | timestamp | New end of the running timer; restart the countdown from it |
@@ -447,6 +450,61 @@ well: render either the event or the REST response and de-duplicate by `id`.
 | `text` | string | 1–2000 characters |
 | `created_at` | timestamp | Millisecond precision here; REST has microseconds. Compare by `id`, not by timestamp string |
 
+### `task_created`, `task_updated`, `task_deleted`
+
+Same payload for all three: the task as `GET /rooms/{id}/tasks` lists it, plus
+`task_id` and `user_id`.
+
+```json
+{
+  "type": "task_updated",
+  "room_id": "3f2b8c1e-6a4d-4d5e-9b1a-2c7e8f9a0b1c",
+  "ts": "2026-10-20T13:00:00.010Z",
+  "data": {
+    "task_id": "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
+    "user_id": "8d3c0f7a-1b2e-4c5d-9e8f-0a1b2c3d4e5f",
+    "id": "5a4b3c2d-1e0f-4a9b-8c7d-6e5f4a3b2c1d",
+    "text": "Write the API reference",
+    "author": { "id": "8d3c0f7a-1b2e-4c5d-9e8f-0a1b2c3d4e5f", "name": "Alice", "avatar_url": null },
+    "completed": false,
+    "timer_status": "running",
+    "duration_minutes": 25,
+    "timer_started_at": "2026-10-20T13:00:00.000Z",
+    "ends_at": "2026-10-20T13:25:00.000Z",
+    "extended_count": 0
+  }
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `task_id` | UUID | |
+| `user_id` | UUID | Task owner |
+| `id` | UUID | Same as `task_id` |
+| `text` | string | |
+| `author.id` | UUID | |
+| `author.name` | string | |
+| `author.avatar_url` | string \| `null` | |
+| `completed` | bool | |
+| `timer_status` | `"idle"` \| `"running"` \| `"prompting"` \| `"ended"` | |
+| `duration_minutes` | int \| `null` | |
+| `timer_started_at` | timestamp \| `null` | |
+| `ends_at` | timestamp \| `null` | |
+| `extended_count` | int | |
+
+- `task_created`: a task was created. When it is created with a timer, this
+  event already shows `timer_status: "running"`, and `timer_started` follows.
+- `task_updated`: any `PATCH /tasks/{id}`, a timer starting, expiring to
+  `prompting`, being extended, or ending after the prompt. These arrive next to
+  the specific timer events, which remain the source for countdowns.
+- `task_deleted`: the payload is the task's last state. No `timer_ended` is
+  sent, so a client counting down must stop on this event.
+
+When a user declines or ignores the prompt, `task_updated` is sent first, then
+`user_left` and `room_updated`. Their tasks then disappear from
+`GET /rooms/{id}/tasks`, with no `task_deleted`, so drop them on `user_left`
+with a `kicked…` or `left_voluntarily` reason.
+
 ### `pong`
 
 ```json
@@ -488,7 +546,8 @@ lost, so on every (re)connect:
    |---|---|
    | Room | `GET /rooms/{id}` |
    | Participants (membership) | `GET /rooms/{id}/participants` |
-   | Own tasks and their timers (`timer_status`, `timer_ends_at`, `prompt_deadline_at`) | `GET /tasks/me` (filter by `room_id`) |
+   | Everyone's tasks and timers in the room (`timer_status`, `ends_at`) | `GET /rooms/{id}/tasks` |
+   | Own prompt deadline (`prompt_deadline_at`) | `GET /tasks/me` (filter by `room_id`) |
    | Chat messages | `GET /rooms/{id}/messages` (newest page), merged with what is shown, de-duplicated by `id` |
 
 3. Apply events from then on. Buffer events that arrive while the REST calls
@@ -498,10 +557,6 @@ lost, so on every (re)connect:
 A `prompting` task in `GET /tasks/me` means an extension prompt is pending
 even if `task_extension_prompt` was missed: show the prompt with
 `prompt_deadline_at` as the deadline.
-
-There is no REST endpoint for **other participants'** tasks or timers. Their
-running timers become visible again only with their next `timer_started` /
-`task_extended` / `timer_ended` event.
 
 ---
 

@@ -46,6 +46,8 @@ All settings come from environment variables. In development (`ENV` unset or
 | `COOKIE_DOMAIN` | empty | `Domain` attribute of the auth cookies, e.g. `.example.com` so `app.` and `api.` share them; empty means host-only cookies. |
 | `EXTENSION_PROMPT_TIMEOUT` | `60s` | How long a user has to answer the "need more time?" prompt before being removed from the room. |
 | `EXTENSION_MAX_COUNT` | `3` | Maximum timer extensions per task. |
+| `EXTENSION_OPTIONS` | `5,10,15` | Comma-separated minutes a user may extend a timer by. |
+| `EXTENSION_MAX_TOTAL_MINUTES` | `30` | Total extra minutes per task, over all extensions. Options that would exceed it are not offered. |
 | `CHAT_RATE_LIMIT` | `10` | Chat messages a user may send per `CHAT_RATE_WINDOW`, across all rooms; `0` disables the limit. |
 | `CHAT_RATE_WINDOW` | `10s` | Length of the chat rate-limit window (fixed window, kept in Redis). |
 | `REGISTER_RATE_LIMIT` | `5` | `POST /auth/register` requests one client IP may make per `REGISTER_RATE_WINDOW`; `0` disables the limit. |

@@ -38,7 +38,7 @@ func TestExtensionHappyPath(t *testing.T) {
 	decodeEventData(t, prompt, &promptData)
 	wantDeadline := expiredAt.Add(task.DefaultExtensionPromptTimeout)
 	if promptData.TaskID.String() != taskID || promptData.Deadline != ws.FormatTime(wantDeadline) ||
-		len(promptData.AllowedMinutes) != 2 || promptData.AllowedMinutes[0] != 15 || promptData.AllowedMinutes[1] != 30 ||
+		len(promptData.AllowedMinutes) != 3 || promptData.AllowedMinutes[0] != 5 || promptData.AllowedMinutes[2] != 15 ||
 		promptData.ExtensionsLeft != task.DefaultExtensionMaxCount || promptData.ServerTime == "" {
 		t.Fatalf("unexpected prompt payload %+v", promptData)
 	}
@@ -58,14 +58,14 @@ func TestExtensionHappyPath(t *testing.T) {
 
 	e.clock.Advance(10 * time.Second)
 	extendedAt := e.clock.Now().UTC().Truncate(time.Millisecond)
-	code, body := e.do(http.MethodPost, "/tasks/"+taskID+"/extend", ownerToken, `{"minutes": 30}`)
+	code, body := e.do(http.MethodPost, "/tasks/"+taskID+"/extend", ownerToken, `{"minutes": 15}`)
 	if code != http.StatusOK {
 		t.Fatalf("extend: expected 200, got %d: %s", code, body)
 	}
 	got := decodeTask(t, body)
-	wantEnds := extendedAt.Add(30 * time.Minute)
+	wantEnds := extendedAt.Add(15 * time.Minute)
 	if got.TimerStatus != task.TimerRunning || got.TimerEndsAt == nil || !got.TimerEndsAt.Equal(wantEnds) ||
-		got.ExtendedCount != 1 || got.ExtraMinutesUsed != 30 || got.PromptDeadlineAt != nil {
+		got.ExtendedCount != 1 || got.ExtraMinutesUsed != 15 || got.PromptDeadlineAt != nil {
 		t.Fatalf("unexpected task after extend %+v", got)
 	}
 	e.expectIndexed(e.timersKey, taskID, wantEnds)
@@ -74,13 +74,13 @@ func TestExtensionHappyPath(t *testing.T) {
 	ev := e.events.waitFor(t, ws.TypeTaskExtended, roomID)
 	var extended ws.TaskExtendedData
 	decodeEventData(t, ev, &extended)
-	if !ev.Broadcast || extended.TaskID.String() != taskID || extended.UserID != owner || extended.AddedMinutes != 30 ||
-		extended.ExtendedCount != 1 || extended.ExtraMinutesUsed != 30 || extended.EndsAt != ws.FormatTime(wantEnds) {
+	if !ev.Broadcast || extended.TaskID.String() != taskID || extended.UserID != owner || extended.AddedMinutes != 15 ||
+		extended.ExtendedCount != 1 || extended.ExtraMinutesUsed != 15 || extended.EndsAt != ws.FormatTime(wantEnds) {
 		t.Fatalf("unexpected task_extended %+v", extended)
 	}
 
 	// The extended timer expires again and prompts again, with one fewer left.
-	e.clock.Advance(31 * time.Minute)
+	e.clock.Advance(16 * time.Minute)
 	if err := e.service.FireDue(context.Background()); err != nil {
 		t.Fatalf("fire due: %v", err)
 	}

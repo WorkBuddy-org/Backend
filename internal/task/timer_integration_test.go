@@ -65,8 +65,8 @@ func TestTimerStartValidation(t *testing.T) {
 		t.Fatalf("completed task: expected 409, got %d", code)
 	}
 
-	if len(e.events.all()) != 0 {
-		t.Fatalf("rejected starts must not emit events, got %+v", e.events.all())
+	if n := e.events.count(ws.TypeTimerStarted); n != 0 {
+		t.Fatalf("rejected starts must not emit timer_started, got %+v", e.events.all())
 	}
 
 	startedAt := e.clock.Now().UTC().Truncate(time.Millisecond)
