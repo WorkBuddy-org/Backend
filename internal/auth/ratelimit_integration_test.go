@@ -59,7 +59,7 @@ func newLoginRouter(t *testing.T, limiterRedis func(real *goredis.Client) *gored
 	tokenManager := auth.NewTokenManager(cfg.JWTSecret, cfg.JWTAccessTTL)
 	service := auth.NewService(auth.NewRepository(db), tokenManager, auth.NewOAuthRegistry(auth.OAuthConfig{}),
 		cfg.JWTRefreshTTL, cfg.FrontendCallbackURL, limiterRedis(redisClient))
-	if _, err := service.RegisterUser(ctx, email, "correct-horse", "Limit Tester"); err != nil {
+	if _, err := service.RegisterUser(ctx, auth.RegisterInput{Email: email, Password: "correct-horse", FirstName: "Limit", LastName: "Tester"}); err != nil {
 		t.Fatalf("register user: %v", err)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/workbuddy/backend/internal/user"
 	"golang.org/x/oauth2"
@@ -16,10 +17,28 @@ import (
 )
 
 type OAuthProfile struct {
-	Provider user.OAuthProvider
-	OAuthID  string
-	Email    string
-	Name     string
+	Provider  user.OAuthProvider
+	OAuthID   string
+	Email     string
+	Name      string
+	FirstName string
+	LastName  string
+	AvatarURL *string
+}
+
+// splitName is the best-effort split of a provider's single name field: the
+// first word, then everything else.
+func splitName(name string) (first, last string) {
+	first, last, _ = strings.Cut(strings.TrimSpace(name), " ")
+	return first, strings.TrimSpace(last)
+}
+
+// optionalString is nil for an empty provider value.
+func optionalString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 type OAuthProvider struct {
@@ -159,9 +178,12 @@ func fetchGoogleProfile(ctx context.Context, token *oauth2.Token, cfg *oauth2.Co
 	}
 
 	var payload struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
-		Name  string `json:"name"`
+		ID         string `json:"id"`
+		Email      string `json:"email"`
+		Name       string `json:"name"`
+		GivenName  string `json:"given_name"`
+		FamilyName string `json:"family_name"`
+		Picture    string `json:"picture"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decode google profile: %w", err)
@@ -170,11 +192,19 @@ func fetchGoogleProfile(ctx context.Context, token *oauth2.Token, cfg *oauth2.Co
 		return nil, fmt.Errorf("google profile missing required fields")
 	}
 
+	first, last := payload.GivenName, payload.FamilyName
+	if first == "" && last == "" {
+		first, last = splitName(payload.Name)
+	}
+
 	return &OAuthProfile{
-		Provider: user.OAuthProviderGoogle,
-		OAuthID:  payload.ID,
-		Email:    payload.Email,
-		Name:     payload.Name,
+		Provider:  user.OAuthProviderGoogle,
+		OAuthID:   payload.ID,
+		Email:     payload.Email,
+		Name:      payload.Name,
+		FirstName: first,
+		LastName:  last,
+		AvatarURL: optionalString(payload.Picture),
 	}, nil
 }
 
@@ -193,10 +223,11 @@ func fetchGitHubProfile(ctx context.Context, token *oauth2.Token, cfg *oauth2.Co
 	}
 
 	var ghUser struct {
-		ID    int64  `json:"id"`
-		Login string `json:"login"`
-		Name  string `json:"name"`
-		Email string `json:"email"`
+		ID        int64  `json:"id"`
+		Login     string `json:"login"`
+		Name      string `json:"name"`
+		Email     string `json:"email"`
+		AvatarURL string `json:"avatar_url"`
 	}
 	if err := json.NewDecoder(userResp.Body).Decode(&ghUser); err != nil {
 		return nil, fmt.Errorf("decode github user: %w", err)
@@ -215,11 +246,16 @@ func fetchGitHubProfile(ctx context.Context, token *oauth2.Token, cfg *oauth2.Co
 		name = ghUser.Login
 	}
 
+	first, last := splitName(name)
+
 	return &OAuthProfile{
-		Provider: user.OAuthProviderGitHub,
-		OAuthID:  fmt.Sprintf("%d", ghUser.ID),
-		Email:    email,
-		Name:     name,
+		Provider:  user.OAuthProviderGitHub,
+		OAuthID:   fmt.Sprintf("%d", ghUser.ID),
+		Email:     email,
+		Name:      name,
+		FirstName: first,
+		LastName:  last,
+		AvatarURL: optionalString(ghUser.AvatarURL),
 	}, nil
 }
 

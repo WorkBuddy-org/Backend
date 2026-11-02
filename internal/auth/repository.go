@@ -29,35 +29,17 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 }
 
 func (r *Repository) FindUserByOAuth(ctx context.Context, provider user.OAuthProvider, oauthID string) (*user.User, error) {
-	const query = `
-		SELECT id, email, name, oauth_provider, oauth_id, role, stack, timezone, avatar_status, created_at, password_hash
-		FROM users
-		WHERE oauth_provider = $1 AND oauth_id = $2
-	`
-
-	row := r.db.QueryRow(ctx, query, string(provider), oauthID)
+	row := r.db.QueryRow(ctx, `SELECT `+user.Columns+` FROM users WHERE oauth_provider = $1 AND oauth_id = $2`, string(provider), oauthID)
 	return scanUser(row)
 }
 
 func (r *Repository) FindUserByEmail(ctx context.Context, email string) (*user.User, error) {
-	const query = `
-		SELECT id, email, name, oauth_provider, oauth_id, role, stack, timezone, avatar_status, created_at, password_hash
-		FROM users
-		WHERE email = $1
-	`
-
-	row := r.db.QueryRow(ctx, query, email)
+	row := r.db.QueryRow(ctx, `SELECT `+user.Columns+` FROM users WHERE email = $1`, email)
 	return scanUser(row)
 }
 
 func (r *Repository) FindUserByID(ctx context.Context, id uuid.UUID) (*user.User, error) {
-	const query = `
-		SELECT id, email, name, oauth_provider, oauth_id, role, stack, timezone, avatar_status, created_at, password_hash
-		FROM users
-		WHERE id = $1
-	`
-
-	row := r.db.QueryRow(ctx, query, id)
+	row := r.db.QueryRow(ctx, `SELECT `+user.Columns+` FROM users WHERE id = $1`, id)
 	return scanUser(row)
 }
 
@@ -92,24 +74,22 @@ func (r *Repository) FindUserNamesByIDs(ctx context.Context, ids []uuid.UUID) (m
 }
 
 func (r *Repository) CreateUser(ctx context.Context, profile *OAuthProfile) (*user.User, error) {
-	const query = `
-		INSERT INTO users (email, name, oauth_provider, oauth_id)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, email, name, oauth_provider, oauth_id, role, stack, timezone, avatar_status, created_at, password_hash
-	`
+	query := `
+		INSERT INTO users (email, name, first_name, last_name, avatar_url, oauth_provider, oauth_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING ` + user.Columns
 
-	row := r.db.QueryRow(ctx, query, profile.Email, profile.Name, string(profile.Provider), profile.OAuthID)
+	row := r.db.QueryRow(ctx, query, profile.Email, profile.Name, profile.FirstName, profile.LastName, profile.AvatarURL, string(profile.Provider), profile.OAuthID)
 	return scanUser(row)
 }
 
-func (r *Repository) CreateEmailUser(ctx context.Context, email, name, passwordHash string) (*user.User, error) {
-	const query = `
-		INSERT INTO users (email, name, oauth_provider, oauth_id, password_hash)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, email, name, oauth_provider, oauth_id, role, stack, timezone, avatar_status, created_at, password_hash
-	`
+func (r *Repository) CreateEmailUser(ctx context.Context, email, firstName, lastName, passwordHash string) (*user.User, error) {
+	query := `
+		INSERT INTO users (email, name, first_name, last_name, oauth_provider, oauth_id, password_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING ` + user.Columns
 
-	row := r.db.QueryRow(ctx, query, email, name, string(user.OAuthProviderEmail), email, passwordHash)
+	row := r.db.QueryRow(ctx, query, email, firstName+" "+lastName, firstName, lastName, string(user.OAuthProviderEmail), email, passwordHash)
 	return scanUser(row)
 }
 
@@ -169,29 +149,12 @@ func (r *Repository) RevokeRefreshToken(ctx context.Context, tokenHash string) e
 }
 
 func scanUser(row pgx.Row) (*user.User, error) {
-	var u user.User
-	var provider string
-
-	err := row.Scan(
-		&u.ID,
-		&u.Email,
-		&u.Name,
-		&provider,
-		&u.OAuthID,
-		&u.Role,
-		&u.Stack,
-		&u.Timezone,
-		&u.AvatarStatus,
-		&u.CreatedAt,
-		&u.PasswordHash,
-	)
+	u, err := user.Scan(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scan user: %w", err)
 	}
-
-	u.OAuthProvider = user.OAuthProvider(provider)
-	return &u, nil
+	return u, nil
 }

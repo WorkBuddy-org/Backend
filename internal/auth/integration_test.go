@@ -61,9 +61,10 @@ func TestRegisterAndLoginFlow(t *testing.T) {
 	})
 
 	registerBody, _ := json.Marshal(map[string]string{
-		"email":    registerEmail,
-		"password": "correct-password",
-		"name":     "Register Flow",
+		"email":      registerEmail,
+		"password":   "correct-password",
+		"first_name": "Register",
+		"last_name":  "Flow",
 	})
 	registerReq := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(registerBody))
 	registerReq.Header.Set("Content-Type", "application/json")
@@ -87,9 +88,10 @@ func TestRegisterAndLoginFlow(t *testing.T) {
 
 	// A password under 8 characters must be rejected.
 	weakBody, _ := json.Marshal(map[string]string{
-		"email":    "weak-password@example.com",
-		"password": "short",
-		"name":     "Weak Password",
+		"email":      "weak-password@example.com",
+		"password":   "short",
+		"first_name": "Weak",
+		"last_name":  "Password",
 	})
 	weakRec := httptest.NewRecorder()
 	weakReq := httptest.NewRequest(http.MethodPost, "/auth/register", bytes.NewReader(weakBody))

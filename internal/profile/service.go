@@ -2,6 +2,7 @@ package profile
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 	// Embedded zone data: the runtime image has no system tzdata, and
@@ -10,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/workbuddy/backend/internal/platform/httpx"
 	"github.com/workbuddy/backend/internal/user"
 )
 
@@ -84,4 +86,77 @@ func trimmed(s *string) *string {
 	}
 	v := strings.TrimSpace(*s)
 	return &v
+}
+
+// maxProfessionOtherChars caps the free-text profession.
+const maxProfessionOtherChars = 100
+
+// OnboardingInput is a partial onboarding update; nil fields are unchanged.
+type OnboardingInput struct {
+	Goal            *string
+	Experience      *string
+	Profession      *string
+	ProfessionOther *string
+}
+
+// UpdateOnboarding validates the input against the stored profession, since
+// profession_other is only meaningful when the resulting profession is other.
+// Moving away from other clears profession_other.
+func (s *Service) UpdateOnboarding(ctx context.Context, userID uuid.UUID, in OnboardingInput) (*user.User, error) {
+	if in.Goal == nil && in.Experience == nil && in.Profession == nil && in.ProfessionOther == nil {
+		return nil, ErrNoFields
+	}
+
+	current, err := s.repo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	fields := httpx.Fields{}
+	checkEnum(fields, "goal", in.Goal, user.Goals)
+	checkEnum(fields, "experience", in.Experience, user.Experiences)
+	checkEnum(fields, "profession", in.Profession, user.Professions)
+
+	profession := current.Profession
+	if in.Profession != nil {
+		profession = in.Profession
+	}
+	isOther := profession != nil && *profession == user.ProfessionOtherValue
+
+	other := current.ProfessionOther
+	if !isOther {
+		other = nil
+	}
+	if in.ProfessionOther != nil {
+		trimmed := strings.TrimSpace(*in.ProfessionOther)
+		switch {
+		case !isOther:
+			fields["profession_other"] = httpx.FieldInvalidValue
+		case utf8.RuneCountInString(trimmed) > maxProfessionOtherChars:
+			fields["profession_other"] = httpx.FieldTooLong
+		default:
+			other = &trimmed
+		}
+	}
+	if len(fields) > 0 {
+		return nil, &httpx.ValidationError{Message: "invalid onboarding fields", Fields: fields}
+	}
+
+	return s.repo.UpdateOnboarding(ctx, userID, OnboardingUpdate{
+		Goal:            in.Goal,
+		Experience:      in.Experience,
+		Profession:      in.Profession,
+		ProfessionOther: other,
+	})
+}
+
+func checkEnum(fields httpx.Fields, field string, value *string, allowed []string) {
+	if value != nil && !slices.Contains(allowed, *value) {
+		fields[field] = httpx.FieldInvalidValue
+	}
+}
+
+// SkipOnboarding marks onboarding completed without touching its fields.
+func (s *Service) SkipOnboarding(ctx context.Context, userID uuid.UUID) (*user.User, error) {
+	return s.repo.CompleteOnboarding(ctx, userID)
 }

@@ -59,9 +59,10 @@ func (h *Handler) RegisterRoutes(r chi.Router, authMiddleware *Middleware) {
 }
 
 type registerRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Name     string `json:"name"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
 }
 
 type loginRequest struct {
@@ -69,24 +70,10 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
-type meResponse struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
-}
-
 // authResponse is the body of register and login; the tokens travel only in
 // cookies.
 type authResponse struct {
-	User meResponse `json:"user"`
-}
-
-func toMeResponse(u *user.User) meResponse {
-	return meResponse{
-		ID:    u.ID.String(),
-		Email: u.Email,
-		Name:  u.Name,
-	}
+	User user.DTO `json:"user"`
 }
 
 func (h *Handler) googleLogin(w http.ResponseWriter, r *http.Request) {
@@ -223,13 +210,10 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := h.service.RegisterUser(r.Context(), req.Email, req.Password, req.Name)
+	u, err := h.service.RegisterUser(r.Context(), RegisterInput(req))
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrInvalidEmail):
-			httpx.Validation(w, err.Error(), httpx.Fields{"email": httpx.FieldInvalidFormat})
-		case errors.Is(err, ErrWeakPassword):
-			httpx.Validation(w, err.Error(), httpx.Fields{"password": httpx.FieldTooShort})
+		case httpx.WriteValidationError(w, err):
 		case errors.Is(err, ErrDuplicateEmail):
 			httpx.Error(w, http.StatusConflict, httpx.CodeEmailExists, err.Error())
 		default:
@@ -298,7 +282,7 @@ func (h *Handler) signIn(w http.ResponseWriter, r *http.Request, u *user.User, s
 	}
 
 	h.cookies.setAuthCookies(w, pair, h.service.RefreshTTL())
-	httpx.JSON(w, status, authResponse{User: toMeResponse(u)})
+	httpx.JSON(w, status, authResponse{User: user.ToDTO(u)})
 }
 
 // refresh rotates the refresh token from the refresh cookie and sets fresh
@@ -385,7 +369,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, toMeResponse(u))
+	httpx.JSON(w, http.StatusOK, user.ToDTO(u))
 }
 
 func setOAuthStateCookie(w http.ResponseWriter, provider *OAuthProvider, state string) {

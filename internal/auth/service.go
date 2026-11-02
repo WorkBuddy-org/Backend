@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/workbuddy/backend/internal/platform/httpx"
 	"github.com/workbuddy/backend/internal/platform/ratelimit"
 	"github.com/workbuddy/backend/internal/user"
 	"golang.org/x/crypto/bcrypt"
@@ -17,6 +19,9 @@ import (
 const (
 	maxLoginAttempts = 5
 	loginAttemptsTTL = 15 * time.Minute
+
+	minPasswordBytes = 8
+	maxNameChars     = 100
 )
 
 type Service struct {
@@ -149,13 +154,22 @@ func (s *Service) GetUser(ctx context.Context, userID string) (*user.User, error
 // RegisterUser creates a new password-based account. Email verification and
 // password reset flows are intentionally out of scope pending an email
 // provider decision.
-func (s *Service) RegisterUser(ctx context.Context, email, password, name string) (*user.User, error) {
-	email = normalizeEmail(email)
+func (s *Service) RegisterUser(ctx context.Context, in RegisterInput) (*user.User, error) {
+	email := normalizeEmail(in.Email)
+	firstName := strings.TrimSpace(in.FirstName)
+	lastName := strings.TrimSpace(in.LastName)
+
+	fields := httpx.Fields{}
+	checkName(fields, "first_name", firstName)
+	checkName(fields, "last_name", lastName)
 	if !isValidEmail(email) {
-		return nil, ErrInvalidEmail
+		fields["email"] = httpx.FieldInvalidFormat
 	}
-	if len(password) < 8 {
-		return nil, ErrWeakPassword
+	if len(in.Password) < minPasswordBytes {
+		fields["password"] = httpx.FieldTooShort
+	}
+	if len(fields) > 0 {
+		return nil, &httpx.ValidationError{Message: "invalid registration fields", Fields: fields}
 	}
 
 	_, err := s.repo.FindUserByEmail(ctx, email)
@@ -166,12 +180,29 @@ func (s *Service) RegisterUser(ctx context.Context, email, password, name string
 		return nil, err
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
 
-	return s.repo.CreateEmailUser(ctx, email, name, string(hash))
+	return s.repo.CreateEmailUser(ctx, email, firstName, lastName, string(hash))
+}
+
+// RegisterInput is what POST /auth/register accepts.
+type RegisterInput struct {
+	FirstName string
+	LastName  string
+	Email     string
+	Password  string
+}
+
+func checkName(fields httpx.Fields, field, value string) {
+	switch n := utf8.RuneCountInString(value); {
+	case n == 0:
+		fields[field] = httpx.FieldRequired
+	case n > maxNameChars:
+		fields[field] = httpx.FieldTooLong
+	}
 }
 
 // AuthenticatePassword verifies an email+password login. It deliberately
