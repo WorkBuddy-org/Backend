@@ -1,0 +1,95 @@
+# Full backend stack for frontend development: Postgres, Redis, one-shot
+# migrate and seed, and the app on http://localhost:8080.
+#
+#   docker compose -f docker-compose.dev.yml up -d --build
+#
+# Only JWT_SECRET has to be set (in .env next to this file). OAuth and LiveKit
+# keys are optional: without them those endpoints answer 503. See the README.
+# Only app builds the image: several services building one tag at once can fail.
+name: workbuddy-dev
+
+x-app-env: &app-env
+  ENV: development
+  DATABASE_URL: postgres://workbuddy:workbuddy@postgres:5432/workbuddy?sslmode=disable
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+  WS_ALLOWED_ORIGINS: ${WS_ALLOWED_ORIGINS:-http://localhost:3000}
+  FRONTEND_CALLBACK_URL: ${FRONTEND_CALLBACK_URL:-http://localhost:3000/auth/callback}
+  COOKIE_SECURE: ${COOKIE_SECURE:-false}
+  COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-}
+  GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+  GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+  GITHUB_REDIRECT_URL: ${GITHUB_REDIRECT_URL:-}
+  LIVEKIT_URL: ${LIVEKIT_URL:-}
+  LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+  LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: workbuddy
+      POSTGRES_PASSWORD: workbuddy
+      POSTGRES_DB: workbuddy
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workbuddy -d workbuddy"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    image: workbuddy-app:dev
+    pull_policy: never
+    entrypoint: ["/app/migrate"]
+    command: ["up"]
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  seed:
+    image: workbuddy-app:dev
+    pull_policy: never
+    entrypoint: ["/app/migrate"]
+    command: ["seed"]
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  app:
+    build: .
+    image: workbuddy-app:dev
+    environment: *app-env
+    ports:
+      - "8080:8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  postgres_data:
