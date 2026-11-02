@@ -209,17 +209,22 @@ func TestRoomResponsesHaveNoSessionFields(t *testing.T) {
 		if code != http.StatusOK {
 			t.Fatalf("%s %s: expected 200, got %d: %s", c.method, c.path, code, body)
 		}
-		var raw map[string]map[string]any
+		var raw map[string]any
 		if err := json.Unmarshal([]byte(body), &raw); err != nil {
 			t.Fatalf("decode %s: %v", body, err)
 		}
 		if _, ok := raw["active_session"]; ok {
 			t.Fatalf("%s %s: unexpected active_session in %s", c.method, c.path, body)
 		}
-		if raw["room"]["id"] != roomID.String() {
+		// GET returns the room itself, join wraps it next to the participation.
+		rm := raw
+		if wrapped, ok := raw["room"].(map[string]any); ok {
+			rm = wrapped
+		}
+		if rm["id"] != roomID.String() {
 			t.Fatalf("%s %s: expected room %s in %s", c.method, c.path, roomID, body)
 		}
-		if p, ok := raw["participation"]; ok {
+		if p, ok := raw["participation"].(map[string]any); ok {
 			if _, has := p["session_id"]; has {
 				t.Fatalf("%s %s: unexpected participation.session_id in %s", c.method, c.path, body)
 			}

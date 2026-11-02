@@ -88,12 +88,16 @@ change the existing database.
 
 ```sh
 $DC up -d --build
-$DC ps                       # app "healthy", migrate "exited (0)", the rest "running"
+$DC ps                       # app "healthy", migrate and seed "exited (0)", the rest "running"
 curl https://api.example.com/health
 # {"status":"ok","checks":{"postgres":"ok","redis":"ok"}}
 ```
 
 The first request can take a few seconds while Caddy obtains the certificate.
+
+The one-shot `seed` service inserts the demo rooms by title on every `up`. It
+never changes or duplicates a room that already exists, so it is safe to run
+again by hand: `$DC run --rm seed`.
 
 ## Updating
 

@@ -163,6 +163,7 @@ participants (`GET /rooms/{id}/participants`) may have no socket open.
 | `presence_snapshot` | targeted: the connecting socket | Right after every successful connect, as the first message |
 | `user_joined` | broadcast: the room, except the joining socket | A user's first socket to the room opened |
 | `user_left` | broadcast: the room | A user's last socket closed, or they left or were removed |
+| `room_updated` | broadcast: the room | Someone joined, left or was removed (not on a socket disconnect) |
 | `timer_started` | broadcast: the room | `POST /tasks/{id}/start` succeeded |
 | `timer_ended` | broadcast: the room | A task timer expired, or its task was completed while running or prompting |
 | `task_extension_prompt` | targeted: the task owner's sockets in this room | The owner's timer expired (right after `timer_ended`) |
@@ -238,6 +239,34 @@ miss the event; see [§7](#7-reconnecting-and-recovering-state).
 
 The values other than `disconnect` match the participation's `left_reason`
 in REST.
+
+### `room_updated`
+
+The room's card data changed because its participants changed: after a new
+`POST /rooms/{id}/join`, after `POST /rooms/{id}/leave`, and after the server
+removes a user. It is about membership, so a repeated join or a closed socket
+doesn't send it. After a leave or a removal it follows `user_left`.
+
+```json
+{
+  "type": "room_updated",
+  "room_id": "3f2b8c1e-6a4d-4d5e-9b1a-2c7e8f9a0b1c",
+  "ts": "2026-10-20T12:35:10.010Z",
+  "data": {
+    "room_id": "3f2b8c1e-6a4d-4d5e-9b1a-2c7e8f9a0b1c",
+    "status": "live",
+    "participants_count": 2,
+    "capacity": 6
+  }
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `room_id` | UUID | Same as the envelope's |
+| `status` | `"live"` \| `"starting_soon"` \| `"open"` \| `"full"` \| `"ended"` | Computed when the event is sent. Time passing alone sends no event |
+| `participants_count` | int | |
+| `capacity` | int | |
 
 ### `timer_started`
 

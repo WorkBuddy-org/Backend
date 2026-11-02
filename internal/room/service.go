@@ -2,8 +2,11 @@ package room
 
 import (
 	"context"
+	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/workbuddy/backend/internal/ws"
 )
 
 // Values of room_participations.left_reason.
@@ -19,9 +22,15 @@ type LeaveListener interface {
 	UserLeft(roomID, userID uuid.UUID, reason string)
 }
 
+// EventPublisher delivers events to a room's WebSocket connections.
+type EventPublisher interface {
+	Broadcast(roomID uuid.UUID, ev ws.Event)
+}
+
 type Service struct {
 	repo     *Repository
 	listener LeaveListener
+	events   EventPublisher
 }
 
 func NewService(repo *Repository) *Service {
@@ -35,14 +44,57 @@ func (s *Service) SetLeaveListener(l LeaveListener) {
 	s.listener = l
 }
 
+// SetEventPublisher registers p to receive room_updated events.
+func (s *Service) SetEventPublisher(p EventPublisher) {
+	s.events = p
+}
+
 type JoinResult struct {
-	Room          *Room
-	ActiveSession *Session
+	Room          *View
 	Participation *Participation
 }
 
-func (s *Service) ListRooms(ctx context.Context, filter Filter) ([]Room, error) {
-	return s.repo.ListRooms(ctx, filter)
+// ComputeStatus is the single place a room's status is decided. The checks
+// are ordered: an ended room stays ended however many people are still in it.
+func ComputeStatus(rm *Room, participantsCount int, now time.Time) string {
+	switch {
+	case rm.EndsAt != nil && rm.EndsAt.Before(now):
+		return StatusEnded
+	case rm.StartsAt != nil && rm.StartsAt.After(now):
+		return StatusStartingSoon
+	case participantsCount >= rm.Capacity:
+		return StatusFull
+	case rm.Type == TypeDiscussion:
+		return StatusOpen
+	default:
+		return StatusLive
+	}
+}
+
+// ListRooms returns the matching rooms, each with its status and first
+// participants.
+func (s *Service) ListRooms(ctx context.Context, filter Filter) ([]View, error) {
+	views, err := s.repo.ListRoomViews(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	for i := range views {
+		views[i].Status = ComputeStatus(&views[i].Room, views[i].ParticipantsCount, now)
+	}
+	return views, nil
+}
+
+// GetRoom is ListRooms for one room.
+func (s *Service) GetRoom(ctx context.Context, roomID uuid.UUID) (*View, error) {
+	views, err := s.ListRooms(ctx, Filter{ID: &roomID})
+	if err != nil {
+		return nil, err
+	}
+	if len(views) == 0 {
+		return nil, ErrRoomNotFound
+	}
+	return &views[0], nil
 }
 
 // GetRoomDetail returns the room and its active session, if any.
@@ -60,33 +112,38 @@ func (s *Service) GetRoomDetail(ctx context.Context, roomID uuid.UUID) (*Room, *
 	return rm, session, nil
 }
 
-// Join is idempotent: if the user already has an open participation in this
-// room, it is returned as-is rather than creating a duplicate.
+// Join is idempotent: a user who already has an open participation gets it
+// back as-is and is not counted twice, even if the room has since filled up or
+// ended. Anyone else is admitted only while the room has not ended and has a
+// free place; the repository checks both under a lock on the room row, so
+// concurrent joins cannot overbook it.
 func (s *Service) Join(ctx context.Context, roomID, userID uuid.UUID) (*JoinResult, error) {
-	rm, session, err := s.GetRoomDetail(ctx, roomID)
+	participation, created, err := s.repo.JoinRoom(ctx, userID, roomID, checkJoinable)
 	if err != nil {
 		return nil, err
 	}
 
-	existing, err := s.repo.FindOpenParticipation(ctx, userID, roomID)
+	view, err := s.GetRoom(ctx, roomID)
 	if err != nil {
 		return nil, err
 	}
-	if existing != nil {
-		return &JoinResult{Room: rm, ActiveSession: session, Participation: existing}, nil
+	if created {
+		s.publishUpdate(view)
 	}
+	return &JoinResult{Room: view, Participation: participation}, nil
+}
 
-	var sessionID *uuid.UUID
-	if session != nil {
-		sessionID = &session.ID
+// checkJoinable decides whether a new participant may enter a room that
+// already has count of them. It does not use ComputeStatus because a room that
+// is starting soon can be full too, without its status saying so.
+func checkJoinable(rm *Room, count int) error {
+	if rm.EndsAt != nil && rm.EndsAt.Before(time.Now()) {
+		return ErrRoomEnded
 	}
-
-	participation, err := s.repo.CreateParticipation(ctx, userID, roomID, sessionID)
-	if err != nil {
-		return nil, err
+	if count >= rm.Capacity {
+		return ErrRoomFull
 	}
-
-	return &JoinResult{Room: rm, ActiveSession: session, Participation: participation}, nil
+	return nil
 }
 
 // HasOpenParticipation reports whether the user is currently in the room.
@@ -125,7 +182,7 @@ func (s *Service) Leave(ctx context.Context, roomID, userID uuid.UUID) error {
 	if err := s.repo.CloseParticipation(ctx, existing.ID, LeftReasonVoluntary); err != nil {
 		return err
 	}
-	s.notifyLeft(roomID, userID, LeftReasonVoluntary)
+	s.notifyLeft(ctx, roomID, userID, LeftReasonVoluntary)
 	return nil
 }
 
@@ -154,12 +211,35 @@ func (s *Service) remove(ctx context.Context, roomID, userID uuid.UUID, reason s
 	if err := s.repo.CloseParticipation(ctx, existing.ID, reason); err != nil {
 		return err
 	}
-	s.notifyLeft(roomID, userID, reason)
+	s.notifyLeft(ctx, roomID, userID, reason)
 	return nil
 }
 
-func (s *Service) notifyLeft(roomID, userID uuid.UUID, reason string) {
+func (s *Service) notifyLeft(ctx context.Context, roomID, userID uuid.UUID, reason string) {
 	if s.listener != nil {
 		s.listener.UserLeft(roomID, userID, reason)
 	}
+	if s.events == nil {
+		return
+	}
+	// The participation is already closed, so a cancelled request must not
+	// lose the event.
+	view, err := s.GetRoom(context.WithoutCancel(ctx), roomID)
+	if err != nil {
+		slog.Error("failed to load room for room_updated", "room_id", roomID, "error", err)
+		return
+	}
+	s.publishUpdate(view)
+}
+
+func (s *Service) publishUpdate(view *View) {
+	if s.events == nil {
+		return
+	}
+	s.events.Broadcast(view.ID, ws.NewEvent(ws.TypeRoomUpdated, view.ID, ws.RoomUpdatedData{
+		RoomID:            view.ID,
+		Status:            view.Status,
+		ParticipantsCount: view.ParticipantsCount,
+		Capacity:          view.Capacity,
+	}))
 }

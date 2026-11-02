@@ -1,4 +1,4 @@
-.PHONY: help run build test tidy docker-up docker-down docker-app lint migrate-up migrate-down migrate-status migrate-version
+.PHONY: help run build test tidy docker-up docker-down docker-app lint migrate-up migrate-down migrate-status migrate-version seed
 
 help:
 	@echo "Available targets:"
@@ -13,6 +13,7 @@ help:
 	@echo "  migrate-down     Roll back the last migration"
 	@echo "  migrate-status   Show migration status"
 	@echo "  migrate-version  Print current migration version"
+	@echo "  seed             Insert the demo rooms (safe to re-run)"
 
 run:
 	go run ./cmd/server
@@ -49,3 +50,6 @@ migrate-status:
 
 migrate-version:
 	go run ./cmd/migrate version
+
+seed:
+	go run ./cmd/migrate seed

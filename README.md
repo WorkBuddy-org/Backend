@@ -15,6 +15,13 @@ See `.env.example` for a ready-to-copy local configuration.
 API docs for the frontend: [docs/api.md](docs/api.md) (REST) and
 [docs/ws-protocol.md](docs/ws-protocol.md) (WebSocket events).
 
+## Demo Rooms
+
+`go run ./cmd/migrate seed` (or `make seed`) inserts six demo rooms by title.
+It never changes or duplicates a room that already exists, so it is safe to
+run again. In production it runs as the one-shot `seed` service of
+`docker-compose.prod.yml`.
+
 ## Configuration
 
 All settings come from environment variables. In development (`ENV` unset or
