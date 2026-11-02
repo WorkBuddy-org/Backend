@@ -1,10 +1,7 @@
 package chat
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -63,19 +60,19 @@ type sendRequest struct {
 func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 	roomID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		httpx.InvalidPathID(w, "room")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	var req sendRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 
@@ -91,13 +88,13 @@ func (h *Handler) send(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	roomID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		httpx.InvalidPathID(w, "room")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
@@ -107,7 +104,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if raw := query.Get("before"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
-			httpx.Error(w, http.StatusBadRequest, ErrInvalidCursor.Error())
+			httpx.Validation(w, ErrInvalidCursor.Error(), httpx.Fields{"before": httpx.FieldInvalidValue})
 			return
 		}
 		before = &id
@@ -118,7 +115,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	if raw := query.Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 {
-			httpx.Error(w, http.StatusBadRequest, "limit must be a positive integer")
+			httpx.Validation(w, "limit must be a positive integer", httpx.Fields{"limit": httpx.FieldInvalidValue})
 			return
 		}
 		limit = min(n, MaxPageSize)
@@ -137,28 +134,22 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, dto)
 }
 
-// writeError maps chat errors to statuses; anything unknown is a 500 without
+// writeError maps chat errors to codes; anything unknown is a 500 without
 // internal details.
 func writeError(w http.ResponseWriter, err error) {
 	var limited *RateLimitedError
 	switch {
 	case errors.As(err, &limited):
-		httpx.RetryAfter(w, limited.RetryAfter)
-		httpx.Error(w, http.StatusTooManyRequests, err.Error())
-	case errors.Is(err, ErrTextRequired), errors.Is(err, ErrTextTooLong), errors.Is(err, ErrInvalidCursor):
-		httpx.Error(w, http.StatusBadRequest, err.Error())
+		httpx.RateLimited(w, limited.RetryAfter, err.Error())
+	case errors.Is(err, ErrTextRequired):
+		httpx.Validation(w, err.Error(), httpx.Fields{"text": httpx.FieldRequired})
+	case errors.Is(err, ErrTextTooLong):
+		httpx.Validation(w, err.Error(), httpx.Fields{"text": httpx.FieldTooLong})
+	case errors.Is(err, ErrInvalidCursor):
+		httpx.Validation(w, err.Error(), httpx.Fields{"before": httpx.FieldInvalidValue})
 	case errors.Is(err, ErrNotInRoom):
-		httpx.Error(w, http.StatusForbidden, err.Error())
+		httpx.Forbidden(w, err.Error())
 	default:
-		slog.Error("chat request failed", "error", err)
-		httpx.Error(w, http.StatusInternalServerError, "internal error")
+		httpx.Internal(w, "chat request failed", err)
 	}
-}
-
-func decodeJSON(r *http.Request, dst any) error {
-	defer func() { _ = r.Body.Close() }()
-
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	return decoder.Decode(dst)
 }

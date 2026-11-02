@@ -1,10 +1,8 @@
 package auth
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -92,17 +90,13 @@ func (h *Handler) githubCallback(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) startOAuth(w http.ResponseWriter, r *http.Request, providerName user.OAuthProvider) {
 	provider, err := h.service.OAuthRegistry().Provider(providerName)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, ErrOAuthNotConfigured) {
-			status = http.StatusServiceUnavailable
-		}
-		httpx.Error(w, status, err.Error())
+		writeProviderError(w, providerName, err)
 		return
 	}
 
 	state, err := generateOAuthState()
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to start oauth flow")
+		httpx.Internal(w, "generate oauth state failed", err)
 		return
 	}
 
@@ -113,59 +107,55 @@ func (h *Handler) startOAuth(w http.ResponseWriter, r *http.Request, providerNam
 func (h *Handler) completeOAuth(w http.ResponseWriter, r *http.Request, providerName user.OAuthProvider) {
 	provider, err := h.service.OAuthRegistry().Provider(providerName)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, ErrOAuthNotConfigured) {
-			status = http.StatusServiceUnavailable
-		}
-		httpx.Error(w, status, err.Error())
+		writeProviderError(w, providerName, err)
 		return
 	}
 
 	if errMsg := r.URL.Query().Get("error"); errMsg != "" {
-		httpx.Error(w, http.StatusBadRequest, "oauth authorization denied")
+		httpx.Forbidden(w, "oauth authorization denied")
 		return
 	}
 
 	state := r.URL.Query().Get("state")
 	if !validateOAuthState(r, provider, state) {
-		httpx.Error(w, http.StatusBadRequest, ErrInvalidOAuthState.Error())
+		httpx.Forbidden(w, ErrInvalidOAuthState.Error())
 		return
 	}
 	clearOAuthStateCookie(w, provider)
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		httpx.Error(w, http.StatusBadRequest, "missing authorization code")
+		httpx.Validation(w, "missing authorization code", httpx.Fields{"code": httpx.FieldRequired})
 		return
 	}
 
 	token, err := provider.Exchange(r.Context(), code)
 	if err != nil {
 		slog.Error("oauth token exchange failed", "provider", providerName, "error", err)
-		httpx.Error(w, http.StatusBadGateway, "oauth token exchange failed")
+		httpx.Error(w, http.StatusBadGateway, httpx.CodeInternal, "oauth token exchange failed")
 		return
 	}
 
 	profile, err := provider.FetchProfile(r.Context(), token)
 	if err != nil {
 		slog.Error("oauth profile fetch failed", "provider", providerName, "error", err)
-		httpx.Error(w, http.StatusBadGateway, "failed to fetch oauth profile")
+		httpx.Error(w, http.StatusBadGateway, httpx.CodeInternal, "failed to fetch oauth profile")
 		return
 	}
 
 	u, err := h.service.AuthenticateOAuthUser(r.Context(), profile)
 	if err != nil {
-		status := http.StatusInternalServerError
 		if errors.Is(err, ErrDuplicateEmail) {
-			status = http.StatusConflict
+			httpx.Error(w, http.StatusConflict, httpx.CodeEmailExists, err.Error())
+			return
 		}
-		httpx.Error(w, status, err.Error())
+		httpx.Internal(w, "oauth user lookup failed", err, "provider", providerName)
 		return
 	}
 
 	pair, err := h.service.IssueTokenPair(r.Context(), u)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to issue tokens")
+		httpx.Internal(w, "issue token pair failed", err)
 		return
 	}
 
@@ -176,11 +166,21 @@ func (h *Handler) completeOAuth(w http.ResponseWriter, r *http.Request, provider
 
 	redirectURL, err := buildFrontendRedirect(h.service.FrontendCallbackURL(), pair)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "invalid frontend callback url")
+		httpx.Internal(w, "build frontend redirect failed", err)
 		return
 	}
 
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// writeProviderError answers an OAuth request for a provider that cannot be
+// used: 503 when it is not configured, 500 otherwise.
+func writeProviderError(w http.ResponseWriter, providerName user.OAuthProvider, err error) {
+	if errors.Is(err, ErrOAuthNotConfigured) {
+		httpx.Error(w, http.StatusServiceUnavailable, httpx.CodeServiceUnavailable, err.Error())
+		return
+	}
+	httpx.Internal(w, "oauth provider lookup failed", err, "provider", providerName)
 }
 
 func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
@@ -189,27 +189,29 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req registerRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 
 	u, err := h.service.RegisterUser(r.Context(), req.Email, req.Password, req.Name)
 	if err != nil {
-		status := http.StatusInternalServerError
 		switch {
-		case errors.Is(err, ErrInvalidEmail), errors.Is(err, ErrWeakPassword):
-			status = http.StatusBadRequest
+		case errors.Is(err, ErrInvalidEmail):
+			httpx.Validation(w, err.Error(), httpx.Fields{"email": httpx.FieldInvalidFormat})
+		case errors.Is(err, ErrWeakPassword):
+			httpx.Validation(w, err.Error(), httpx.Fields{"password": httpx.FieldTooShort})
 		case errors.Is(err, ErrDuplicateEmail):
-			status = http.StatusConflict
+			httpx.Error(w, http.StatusConflict, httpx.CodeEmailExists, err.Error())
+		default:
+			httpx.Internal(w, "register failed", err)
 		}
-		httpx.Error(w, status, err.Error())
 		return
 	}
 
 	pair, err := h.service.IssueTokenPair(r.Context(), u)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to issue tokens")
+		httpx.Internal(w, "issue token pair failed", err)
 		return
 	}
 
@@ -229,8 +231,7 @@ func (h *Handler) allowRegister(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	if !allowed {
-		httpx.RetryAfter(w, retryAfter)
-		httpx.Error(w, http.StatusTooManyRequests, ErrRegisterLimited.Error())
+		httpx.RateLimited(w, retryAfter, ErrRegisterLimited.Error())
 		return false
 	}
 	return true
@@ -242,29 +243,28 @@ func registerAttemptsKey(ip string) string {
 
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 
 	u, err := h.service.AuthenticatePassword(r.Context(), req.Email, req.Password)
 	if err != nil {
-		status := http.StatusInternalServerError
 		var limited *RateLimitedError
 		switch {
 		case errors.Is(err, ErrInvalidCredentials):
-			status = http.StatusUnauthorized
+			httpx.Error(w, http.StatusUnauthorized, httpx.CodeInvalidCredentials, err.Error())
 		case errors.As(err, &limited):
-			httpx.RetryAfter(w, limited.RetryAfter)
-			status = http.StatusTooManyRequests
+			httpx.RateLimited(w, limited.RetryAfter, err.Error())
+		default:
+			httpx.Internal(w, "login failed", err)
 		}
-		httpx.Error(w, status, err.Error())
 		return
 	}
 
 	pair, err := h.service.IssueTokenPair(r.Context(), u)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to issue tokens")
+		httpx.Internal(w, "issue token pair failed", err)
 		return
 	}
 
@@ -273,45 +273,51 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	var req refreshRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 	if req.RefreshToken == "" {
-		httpx.Error(w, http.StatusBadRequest, "refresh_token is required")
+		httpx.Validation(w, "refresh_token is required", httpx.Fields{"refresh_token": httpx.FieldRequired})
 		return
 	}
 
 	pair, err := h.service.Refresh(r.Context(), req.RefreshToken)
 	if err != nil {
-		status := http.StatusUnauthorized
-		if !errors.Is(err, ErrInvalidToken) && !errors.Is(err, ErrTokenExpired) && !errors.Is(err, ErrTokenRevoked) {
-			status = http.StatusInternalServerError
+		if isRefreshRejected(err) {
+			httpx.Unauthorized(w, err.Error())
+			return
 		}
-		httpx.Error(w, status, err.Error())
+		httpx.Internal(w, "refresh failed", err)
 		return
 	}
 
 	httpx.JSON(w, http.StatusOK, pair)
 }
 
+// isRefreshRejected reports whether a Refresh error is the client's refresh
+// token being unknown, expired or revoked, as opposed to a server failure.
+func isRefreshRejected(err error) bool {
+	return errors.Is(err, ErrInvalidToken) || errors.Is(err, ErrTokenExpired) || errors.Is(err, ErrTokenRevoked)
+}
+
 func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	var req logoutRequest
-	if err := decodeJSON(r, &req); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid request body")
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.DecodeError(w, err)
 		return
 	}
 	if req.RefreshToken == "" {
-		httpx.Error(w, http.StatusBadRequest, "refresh_token is required")
+		httpx.Validation(w, "refresh_token is required", httpx.Fields{"refresh_token": httpx.FieldRequired})
 		return
 	}
 
 	if err := h.service.Logout(r.Context(), req.RefreshToken); err != nil {
-		status := http.StatusUnauthorized
-		if !errors.Is(err, ErrInvalidToken) {
-			status = http.StatusInternalServerError
+		if errors.Is(err, ErrInvalidToken) {
+			httpx.Unauthorized(w, err.Error())
+			return
 		}
-		httpx.Error(w, status, err.Error())
+		httpx.Internal(w, "logout failed", err)
 		return
 	}
 
@@ -321,17 +327,20 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	userID, ok := UserIDFromContext(r.Context())
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
 	u, err := h.service.GetUser(r.Context(), userID)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, ErrUserNotFound) {
-			status = http.StatusNotFound
+		switch {
+		case errors.Is(err, ErrUserNotFound):
+			httpx.NotFound(w, err.Error())
+		case errors.Is(err, ErrInvalidToken):
+			httpx.Unauthorized(w, err.Error())
+		default:
+			httpx.Internal(w, "get user failed", err)
 		}
-		httpx.Error(w, status, err.Error())
 		return
 	}
 
@@ -401,15 +410,4 @@ func buildFrontendRedirect(baseURL string, pair *TokenPair) (string, error) {
 func wantsJSON(r *http.Request) bool {
 	accept := r.Header.Get("Accept")
 	return strings.Contains(accept, "application/json")
-}
-
-func decodeJSON(r *http.Request, dst any) error {
-	defer func() { _ = r.Body.Close() }()
-
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(dst); err != nil {
-		return err
-	}
-	return nil
 }

@@ -2,7 +2,6 @@ package call
 
 import (
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -35,13 +34,13 @@ type tokenDTO struct {
 func (h *Handler) issueToken(w http.ResponseWriter, r *http.Request) {
 	roomID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid room id")
+		httpx.InvalidPathID(w, "room")
 		return
 	}
 
 	userID, err := auth.CurrentUserID(r)
 	if err != nil {
-		httpx.Error(w, http.StatusUnauthorized, "missing user context")
+		httpx.Unauthorized(w, "missing user context")
 		return
 	}
 
@@ -49,12 +48,11 @@ func (h *Handler) issueToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrNotConfigured):
-			httpx.Error(w, http.StatusServiceUnavailable, err.Error())
+			httpx.Error(w, http.StatusServiceUnavailable, httpx.CodeServiceUnavailable, err.Error())
 		case errors.Is(err, ErrNotInRoom):
-			httpx.Error(w, http.StatusForbidden, err.Error())
+			httpx.Forbidden(w, err.Error())
 		default:
-			slog.Error("issue call token failed", "room_id", roomID, "user_id", userID, "error", err)
-			httpx.Error(w, http.StatusInternalServerError, "internal server error")
+			httpx.Internal(w, "issue call token failed", err, "room_id", roomID, "user_id", userID)
 		}
 		return
 	}

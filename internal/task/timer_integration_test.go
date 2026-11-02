@@ -55,8 +55,8 @@ func TestTimerStartValidation(t *testing.T) {
 	// A task in a room the owner has not joined (or has left) cannot start.
 	otherRoomID := e.createRoom()
 	outsideTaskID := e.createTask(otherRoomID, ownerToken)
-	if code, _ := e.do(http.MethodPost, "/tasks/"+outsideTaskID+"/start", ownerToken, `{"duration_minutes": 25}`); code != http.StatusConflict {
-		t.Fatalf("not in room: expected 409, got %d", code)
+	if code, _ := e.do(http.MethodPost, "/tasks/"+outsideTaskID+"/start", ownerToken, `{"duration_minutes": 25}`); code != http.StatusForbidden {
+		t.Fatalf("not in room: expected 403, got %d", code)
 	}
 
 	completedTaskID := e.createTask(roomID, ownerToken)

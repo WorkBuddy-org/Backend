@@ -178,6 +178,7 @@ func TestRegisterAndLoginFlow(t *testing.T) {
 	if dupRec.Code != http.StatusConflict {
 		t.Fatalf("expected duplicate register 409, got %d: %s", dupRec.Code, dupRec.Body.String())
 	}
+	assertErrorCode(t, dupRec.Body.String(), "EMAIL_EXISTS", "")
 
 	// A password under 8 characters must be rejected.
 	weakBody, _ := json.Marshal(map[string]string{
@@ -192,6 +193,7 @@ func TestRegisterAndLoginFlow(t *testing.T) {
 	if weakRec.Code != http.StatusBadRequest {
 		t.Fatalf("expected weak password register 400, got %d: %s", weakRec.Code, weakRec.Body.String())
 	}
+	assertErrorCode(t, weakRec.Body.String(), "VALIDATION_ERROR", `"fields":{"password":"TOO_SHORT"}`)
 
 	// Correct credentials must authenticate and issue tokens.
 	loginBody, _ := json.Marshal(map[string]string{
@@ -226,6 +228,7 @@ func TestRegisterAndLoginFlow(t *testing.T) {
 	if wrongRec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected wrong password login 401, got %d: %s", wrongRec.Code, wrongRec.Body.String())
 	}
+	assertErrorCode(t, wrongRec.Body.String(), "INVALID_CREDENTIALS", "")
 
 	// An oauth-only account has no password set; logging in with a password
 	// must fail the same way as any other invalid credentials, not 500 and
@@ -242,6 +245,7 @@ func TestRegisterAndLoginFlow(t *testing.T) {
 	if oauthLoginRec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected oauth-only account login 401, got %d: %s", oauthLoginRec.Code, oauthLoginRec.Body.String())
 	}
+	assertErrorCode(t, oauthLoginRec.Body.String(), "INVALID_CREDENTIALS", "")
 }
 
 func createTestUser(t *testing.T, db *pgxpool.Pool, email string) *user.User {
@@ -269,4 +273,26 @@ func createTestUser(t *testing.T, db *pgxpool.Pool, email string) *user.User {
 	})
 
 	return u
+}
+
+// assertErrorCode checks that body is an error response with the given code
+// and, when wantDetails is not empty, that its raw details contain it.
+func assertErrorCode(t *testing.T, body, wantCode, wantDetails string) {
+	t.Helper()
+	var resp struct {
+		Error struct {
+			Code    string          `json:"code"`
+			Message string          `json:"message"`
+			Details json.RawMessage `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("decode error body %s: %v", body, err)
+	}
+	if resp.Error.Code != wantCode || resp.Error.Message == "" {
+		t.Fatalf("expected error code %s with a message, got %s", wantCode, body)
+	}
+	if wantDetails != "" && !bytes.Contains(resp.Error.Details, []byte(wantDetails)) {
+		t.Fatalf("expected details containing %s, got %s", wantDetails, body)
+	}
 }

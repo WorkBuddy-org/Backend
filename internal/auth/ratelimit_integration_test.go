@@ -102,9 +102,12 @@ func TestLoginRateLimitRetryAfter(t *testing.T) {
 			t.Fatalf("expected Retry-After of 1..900 seconds, got %q", rec.Header().Get("Retry-After"))
 		}
 		var body struct {
-			Error string `json:"error"`
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error != "too many login attempts, try again later" {
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Error.Code != "RATE_LIMITED" || body.Error.Message != "too many login attempts, try again later" {
 			t.Fatalf("unexpected 429 body %s", rec.Body.String())
 		}
 	}

@@ -46,7 +46,7 @@ func TestTaskTextLength(t *testing.T) {
 		{http.MethodPatch, "/tasks/" + created.ID, body(" \t "), "text is required"},
 	} {
 		code, resp := e.do(tc.method, tc.path, owner, tc.body)
-		if code != http.StatusBadRequest || !strings.Contains(resp, `"error":"`+tc.wantErr+`"`) {
+		if code != http.StatusBadRequest || !strings.Contains(resp, `"code":"VALIDATION_ERROR","message":"`+tc.wantErr+`"`) {
 			t.Fatalf("%s %s: expected 400 %q, got %d: %s", tc.method, tc.path, tc.wantErr, code, resp)
 		}
 	}

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -26,19 +27,30 @@ func (m *Middleware) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token, err := bearerToken(r.Header.Get("Authorization"))
 		if err != nil {
-			httpx.Error(w, http.StatusUnauthorized, "missing or invalid authorization header")
+			httpx.Unauthorized(w, "missing or invalid authorization header")
 			return
 		}
 
 		claims, err := m.tokens.ParseAccessToken(token)
 		if err != nil {
-			httpx.Error(w, http.StatusUnauthorized, "invalid access token")
+			WriteTokenError(w, err)
 			return
 		}
 
 		ctx := context.WithValue(r.Context(), userIDContextKey, claims.Subject)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// WriteTokenError writes the 401 for an access token that failed to parse:
+// TOKEN_EXPIRED when it is genuine but expired, so the client knows to
+// refresh, and UNAUTHORIZED otherwise.
+func WriteTokenError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrTokenExpired) {
+		httpx.Error(w, http.StatusUnauthorized, httpx.CodeTokenExpired, "access token expired")
+		return
+	}
+	httpx.Unauthorized(w, "invalid access token")
 }
 
 func UserIDFromContext(ctx context.Context) (string, bool) {
